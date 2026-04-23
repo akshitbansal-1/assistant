@@ -7,36 +7,49 @@
     <link rel="stylesheet" href="/static/ui.css" />
   </head>
   <body>
+    <nav class="nav">
+      <a class="nav-brand" href="/ui">
+        <div class="nav-logo">⚡</div>
+        Work Intelligence
+      </a>
+    </nav>
+
     <main class="shell">
-      <section class="hero">
+      <a class="back-link" href="/ui">← All users</a>
+
+      {% if linked_provider %}
+        <div class="banner banner-success">✓ {{ linked_provider|capitalize }} account linked successfully.</div>
+      {% endif %}
+
+      <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:24px;">
         <div>
-          <a class="back-link" href="/ui">← All users</a>
-          <p class="eyebrow">Workspace view</p>
-          <h1>{{ user.name or user.email }}</h1>
-          <p class="lede">{{ user.email }}</p>
-          {% if linked_provider %}
-            <div class="banner success">{{ linked_provider|capitalize }} account linked successfully.</div>
-          {% endif %}
-          <div class="button-row">
-            <a class="action-button" href="/ui/users/{{ user.email }}/connect/google">Add Google account</a>
-            <a class="action-button" href="/ui/users/{{ user.email }}/connect/slack">Add Slack workspace</a>
-            <a class="action-button" href="/ui/users/{{ user.email }}/connect/notion">Add Notion account</a>
+          <h1 class="page-title">{{ user.name or user.email.split("@")[0] }}</h1>
+          <p class="page-subtitle">{{ user.email }}</p>
+          <div class="btn-row">
+            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/google">+ Google</a>
+            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/slack">+ Slack</a>
+            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/notion">+ Notion</a>
           </div>
         </div>
-        <div class="metric-strip">
-          {% for label, value in metrics.items() %}
-            <article class="metric-card">
-              <span>{{ label.replace('_', ' ') }}</span>
-              <strong>{{ value }}</strong>
-            </article>
-          {% endfor %}
-        </div>
-      </section>
+        <button id="run-btn" class="btn btn-primary" onclick="runPipeline('{{ user.email }}')">
+          ▶ Run Pipeline
+        </button>
+      </div>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Linked accounts</h2>
-          <span class="muted">{{ accounts|length }} linked</span>
+      <div class="metric-strip">
+        {% for label, value in metrics.items() %}
+          <div class="metric-card">
+            <div class="metric-label">{{ label.replace('_', ' ') }}</div>
+            <div class="metric-value">{{ value }}</div>
+          </div>
+        {% endfor %}
+      </div>
+
+      <!-- Linked accounts -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Linked accounts</span>
+          <span class="panel-count">{{ accounts|length }}</span>
         </div>
         <div class="table-wrap">
           <table>
@@ -52,135 +65,202 @@
             <tbody>
               {% for account in accounts %}
                 <tr>
-                  <td><span class="pill source">{{ account.source }}</span></td>
+                  <td>
+                    <span class="pill pill-{{ account.source }}">{{ account.source }}</span>
+                  </td>
                   <td>{{ account.label }}</td>
-                  <td>{{ account.account_identifier }}</td>
-                  <td>{{ "active" if account.is_active else "inactive" }}</td>
-                  <td>{{ account.expires_at or "—" }}</td>
+                  <td class="text-2">{{ account.account_identifier }}</td>
+                  <td>
+                    <span class="pill pill-{{ 'active' if account.is_active else 'inactive' }}">
+                      {{ "Active" if account.is_active else "Inactive" }}
+                    </span>
+                  </td>
+                  <td class="tiny">{{ account.expires_at or "—" }}</td>
                 </tr>
               {% else %}
-                <tr><td colspan="5" class="empty-cell">No linked accounts</td></tr>
+                <tr><td colspan="5" class="empty-cell">No linked accounts — connect a provider above</td></tr>
               {% endfor %}
             </tbody>
           </table>
         </div>
-      </section>
+      </div>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Past summaries</h2>
-          <span class="muted">{{ summaries|length }} stored</span>
+      <!-- Past summaries -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Past summaries</span>
+          <span class="panel-count">{{ summaries|length }}</span>
         </div>
-        <div class="stack">
+        {% if summaries %}
           {% for summary in summaries %}
-            <article class="summary-card">
-              <div class="summary-card-top">
+            <div class="summary-card">
+              <div class="summary-card-head">
                 <div>
-                  <h3>{{ summary.summary_date }}</h3>
-                  <p class="muted">{{ summary.period_start }} to {{ summary.period_end }}</p>
+                  <div class="summary-date">{{ summary.summary_date }}</div>
+                  <div class="summary-range">{{ summary.period_start }} → {{ summary.period_end }}</div>
                 </div>
-                <span class="pill">{{ summary.delivery_channel }}</span>
+                <span class="pill pill-neutral">{{ summary.delivery_channel }}</span>
               </div>
-              <pre class="human-readable">{{ summary.human_readable }}</pre>
+              <pre>{{ summary.human_readable }}</pre>
               <details>
-                <summary>View JSON</summary>
+                <summary>▸ View JSON</summary>
                 <pre>{{ summary.summary_json | prettyjson }}</pre>
               </details>
-            </article>
-          {% else %}
-            <div class="empty-state">
-              <h3>No summaries yet</h3>
-              <p>Run the pipeline and the generated daily summaries will appear here.</p>
             </div>
           {% endfor %}
-        </div>
-      </section>
-
-      <section class="split-grid">
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Tracked tasks</h2>
-            <span class="muted">{{ tracked_tasks|length }} shown</span>
+        {% else %}
+          <div class="empty-state">
+            <span class="empty-icon">📋</span>
+            <h3>No summaries yet</h3>
+            <p>Click "Run Pipeline" above to generate your first daily summary.</p>
           </div>
-          <div class="stack compact">
+        {% endif %}
+      </div>
+
+      <!-- Tracked tasks + Known entities -->
+      <div class="split-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Tracked tasks</span>
+            <span class="panel-count">{{ tracked_tasks|length }}</span>
+          </div>
+          {% if tracked_tasks %}
             {% for task in tracked_tasks %}
-              <article class="list-card">
+              <div class="list-card">
                 <div class="list-card-top">
-                  <h3>{{ task.title }}</h3>
-                  <span class="pill">{{ task.status }}</span>
+                  <div class="list-card-title">{{ task.title }}</div>
+                  <span class="pill pill-neutral">{{ task.status }}</span>
                 </div>
-                <p class="muted">{{ task.latest_summary or "No summary yet" }}</p>
-                <p class="tiny">People: {{ task.people_json|join(", ") if task.people_json else "—" }}</p>
-              </article>
-            {% else %}
-              <p class="empty-cell">No tracked tasks yet</p>
+                <p class="text-2" style="font-size:0.83rem; margin:0 0 4px;">{{ task.latest_summary or "No summary yet" }}</p>
+                {% if task.people_json %}
+                  <div class="tiny">{{ task.people_json|join(", ") }}</div>
+                {% endif %}
+              </div>
             {% endfor %}
-          </div>
-        </section>
-
-        <section class="panel">
-          <div class="panel-header">
-            <h2>Known people/entities</h2>
-            <span class="muted">{{ entities|length }} shown</span>
-          </div>
-          <div class="stack compact">
-            {% for entity in entities %}
-              <article class="list-card">
-                <div class="list-card-top">
-                  <h3>{{ entity.name }}</h3>
-                  <span class="pill">{{ entity.entity_type }}</span>
-                </div>
-                <p class="tiny">Updated {{ entity.updated_at }}</p>
-              </article>
-            {% else %}
-              <p class="empty-cell">No stored entities yet</p>
-            {% endfor %}
-          </div>
-        </section>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Stored work items</h2>
-          <span class="muted">{{ items|length }} most recent shown</span>
+          {% else %}
+            <div class="empty-state">
+              <span class="empty-icon">✅</span>
+              <h3>No tracked tasks</h3>
+              <p>Tasks extracted from your workspace will appear here after a pipeline run.</p>
+            </div>
+          {% endif %}
         </div>
-        <div class="stack">
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Known people & entities</span>
+            <span class="panel-count">{{ entities|length }}</span>
+          </div>
+          {% if entities %}
+            {% for entity in entities %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ entity.name }}</div>
+                  <span class="pill pill-neutral">{{ entity.entity_type }}</span>
+                </div>
+                <div class="tiny">Updated {{ entity.updated_at }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <span class="empty-icon">👥</span>
+              <h3>No entities yet</h3>
+              <p>People and entities mentioned in your workspace will be tracked here.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <!-- Work items -->
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Stored work items</span>
+          <span class="panel-count">{{ items|length }} most recent</span>
+        </div>
+        {% if items %}
           {% for item in items %}
-            <article class="item-card">
+            <div class="item-card">
               <div class="item-card-top">
-                <div>
-                  <div class="row">
-                    <span class="pill source">{{ item.source }}</span>
+                <div style="min-width:0; flex:1;">
+                  <div class="tag-row">
+                    <span class="pill pill-{{ item.source }}">{{ item.source }}</span>
                     {% if item.classification %}
-                      <span class="pill">{{ item.classification }}</span>
+                      <span class="pill pill-{{ item.classification }}">{{ item.classification }}</span>
                     {% endif %}
                     {% if item.needs_action %}
-                      <span class="pill action">needs action</span>
+                      <span class="pill pill-action">needs action</span>
                     {% endif %}
                   </div>
-                  <h3>{{ item.title }}</h3>
+                  <div class="item-title">{{ item.title }}</div>
                 </div>
                 <time>{{ item.timestamp }}</time>
               </div>
-              <p>{{ item.short_summary or item.content[:220] }}</p>
-              <p class="tiny">
-                People: {{ item.people_json|join(", ") if item.people_json else "—" }}
-                · Dedupe key: {{ item.dedupe_key }}
-              </p>
+              <p class="item-meta">{{ item.short_summary or item.content[:220] }}</p>
+              {% if item.people_json or item.dedupe_key %}
+                <div class="item-footer">
+                  {% if item.people_json %}People: {{ item.people_json|join(", ") }} · {% endif %}
+                  {{ item.dedupe_key }}
+                </div>
+              {% endif %}
               <details>
-                <summary>View full item</summary>
+                <summary>▸ View full item</summary>
                 <pre>{{ item.metadata_json | prettyjson }}</pre>
                 <pre>{{ item.content }}</pre>
               </details>
-            </article>
-          {% else %}
-            <div class="empty-state">
-              <h3>No stored work items</h3>
-              <p>Ingested Gmail, Slack, Notion, and Jira data will show up here.</p>
             </div>
           {% endfor %}
-        </div>
-      </section>
+        {% else %}
+          <div class="empty-state">
+            <span class="empty-icon">📬</span>
+            <h3>No work items yet</h3>
+            <p>Ingested Gmail, Slack, Notion, and Jira data will appear here after a pipeline run.</p>
+          </div>
+        {% endif %}
+      </div>
     </main>
+
+    <div id="pipeline-toast"></div>
+
+    <script>
+      async function runPipeline(userEmail) {
+        const btn = document.getElementById('run-btn');
+        const toast = document.getElementById('pipeline-toast');
+
+        btn.disabled = true;
+        btn.textContent = '⏳ Running…';
+
+        toast.className = 'show loading';
+        toast.textContent = 'Pipeline running…';
+
+        try {
+          const res = await fetch('/api/v1/pipeline/run', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_email: userEmail, lookback_hours: 24 }),
+          });
+
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+
+          const data = await res.json();
+          toast.className = 'show success';
+          toast.textContent = `✓ Summary generated for ${data.summary_date}`;
+          btn.textContent = '✓ Done';
+
+          setTimeout(() => {
+            toast.className = '';
+            window.location.reload();
+          }, 2000);
+        } catch (err) {
+          toast.className = 'show error';
+          toast.textContent = `✗ ${err.message}`;
+          btn.disabled = false;
+          btn.textContent = '▶ Run Pipeline';
+          setTimeout(() => { toast.className = ''; }, 4000);
+        }
+      }
+    </script>
   </body>
 </html>

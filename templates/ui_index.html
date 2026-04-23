@@ -3,70 +3,80 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Work Intelligence UI</title>
+    <title>Work Intelligence</title>
     <link rel="stylesheet" href="/static/ui.css" />
   </head>
   <body>
+    <nav class="nav">
+      <a class="nav-brand" href="/ui">
+        <div class="nav-logo">⚡</div>
+        Work Intelligence
+      </a>
+    </nav>
+
     <main class="shell">
       <section class="hero">
-        <div>
-          <p class="eyebrow">Daily Work Intelligence Agent</p>
-          <h1>Stored workspace intelligence</h1>
-          <p class="lede">
-            Browse linked accounts, historical summaries, and the normalized data collected so far.
-          </p>
-        </div>
+        <div class="hero-eyebrow">Daily Work Intelligence Agent</div>
+        <h1 class="hero-title">Your workspace,<br>at a glance</h1>
+        <p class="hero-sub">
+          Browse linked accounts, historical summaries, and the normalized data collected from Gmail, Slack, Notion, and Jira.
+        </p>
       </section>
 
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Users</h2>
-          <span class="muted">{{ users|length }} total</span>
+      {% if oauth_error %}
+        <div class="banner banner-error">⚠ OAuth flow failed: {{ oauth_error }}</div>
+      {% endif %}
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Users</span>
+          <span class="panel-count">{{ users|length }} total</span>
         </div>
-        {% if oauth_error %}
-          <div class="banner error">OAuth flow failed: {{ oauth_error }}</div>
-        {% endif %}
+
         {% if users %}
-          <div class="card-grid">
-            {% for card in users %}
-              <a class="user-card" href="/ui/users/{{ card.user.email }}">
-                <div class="user-card-top">
-                  <h3>{{ card.user.name or card.user.email }}</h3>
-                  <span class="pill">{{ card.user.email }}</span>
-                </div>
-                <div class="button-row">
-                  <span class="button-like">Connect Google</span>
-                  <span class="button-like">Connect Slack</span>
-                  <span class="button-like">Connect Notion</span>
-                </div>
-                <dl class="stats-grid">
-                  <div>
-                    <dt>Accounts</dt>
-                    <dd>{{ card.account_count }}</dd>
+          <div class="panel-body">
+            <div class="card-grid">
+              {% for card in users %}
+                <a class="user-card" href="/ui/users/{{ card.user.email }}">
+                  <div class="user-card-top">
+                    <div class="avatar">
+                      {{ (card.user.name or card.user.email)[0].upper() }}
+                    </div>
+                    <div>
+                      <div class="user-card-name">{{ card.user.name or card.user.email.split("@")[0] }}</div>
+                      <div class="user-card-email">{{ card.user.email }}</div>
+                    </div>
                   </div>
-                  <div>
-                    <dt>Summaries</dt>
-                    <dd>{{ card.summary_count }}</dd>
+                  <div class="user-stats">
+                    <div class="user-stat">
+                      <span class="user-stat-value">{{ card.account_count }}</span>
+                      <span class="user-stat-label">Accounts</span>
+                    </div>
+                    <div class="user-stat">
+                      <span class="user-stat-value">{{ card.summary_count }}</span>
+                      <span class="user-stat-label">Summaries</span>
+                    </div>
+                    <div class="user-stat">
+                      <span class="user-stat-value">{{ card.item_count }}</span>
+                      <span class="user-stat-label">Items</span>
+                    </div>
+                    <div class="user-stat">
+                      <span class="user-stat-value">{{ card.task_count }}</span>
+                      <span class="user-stat-label">Tasks</span>
+                    </div>
                   </div>
-                  <div>
-                    <dt>Items</dt>
-                    <dd>{{ card.item_count }}</dd>
-                  </div>
-                  <div>
-                    <dt>Tracked</dt>
-                    <dd>{{ card.task_count }}</dd>
-                  </div>
-                </dl>
-              </a>
-            {% endfor %}
+                </a>
+              {% endfor %}
+            </div>
           </div>
         {% else %}
           <div class="empty-state">
+            <span class="empty-icon">👤</span>
             <h3>No users yet</h3>
-            <p>Create or link an account through the API, then this UI will populate automatically.</p>
+            <p>Create or link an account through the API — this dashboard will populate automatically.</p>
           </div>
         {% endif %}
-      </section>
+      </div>
     </main>
   </body>
 </html>
