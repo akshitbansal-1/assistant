@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{ user.email }} · Work Intelligence</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <a class="back-link" href="/ui">← All users</a>
+          <p class="eyebrow">Workspace view</p>
+          <h1>{{ user.name or user.email }}</h1>
+          <p class="lede">{{ user.email }}</p>
+          {% if linked_provider %}
+            <div class="banner success">{{ linked_provider|capitalize }} account linked successfully.</div>
+          {% endif %}
+          <div class="button-row">
+            <a class="action-button" href="/ui/users/{{ user.email }}/connect/google">Add Google account</a>
+            <a class="action-button" href="/ui/users/{{ user.email }}/connect/slack">Add Slack workspace</a>
+            <a class="action-button" href="/ui/users/{{ user.email }}/connect/notion">Add Notion account</a>
+          </div>
+        </div>
+        <div class="metric-strip">
+          {% for label, value in metrics.items() %}
+            <article class="metric-card">
+              <span>{{ label.replace('_', ' ') }}</span>
+              <strong>{{ value }}</strong>
+            </article>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Linked accounts</h2>
+          <span class="muted">{{ accounts|length }} linked</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Source</th>
+                <th>Label</th>
+                <th>Identifier</th>
+                <th>Status</th>
+                <th>Expires</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for account in accounts %}
+                <tr>
+                  <td><span class="pill source">{{ account.source }}</span></td>
+                  <td>{{ account.label }}</td>
+                  <td>{{ account.account_identifier }}</td>
+                  <td>{{ "active" if account.is_active else "inactive" }}</td>
+                  <td>{{ account.expires_at or "—" }}</td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5" class="empty-cell">No linked accounts</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Past summaries</h2>
+          <span class="muted">{{ summaries|length }} stored</span>
+        </div>
+        <div class="stack">
+          {% for summary in summaries %}
+            <article class="summary-card">
+              <div class="summary-card-top">
+                <div>
+                  <h3>{{ summary.summary_date }}</h3>
+                  <p class="muted">{{ summary.period_start }} to {{ summary.period_end }}</p>
+                </div>
+                <span class="pill">{{ summary.delivery_channel }}</span>
+              </div>
+              <pre class="human-readable">{{ summary.human_readable }}</pre>
+              <details>
+                <summary>View JSON</summary>
+                <pre>{{ summary.summary_json | prettyjson }}</pre>
+              </details>
+            </article>
+          {% else %}
+            <div class="empty-state">
+              <h3>No summaries yet</h3>
+              <p>Run the pipeline and the generated daily summaries will appear here.</p>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="split-grid">
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Tracked tasks</h2>
+            <span class="muted">{{ tracked_tasks|length }} shown</span>
+          </div>
+          <div class="stack compact">
+            {% for task in tracked_tasks %}
+              <article class="list-card">
+                <div class="list-card-top">
+                  <h3>{{ task.title }}</h3>
+                  <span class="pill">{{ task.status }}</span>
+                </div>
+                <p class="muted">{{ task.latest_summary or "No summary yet" }}</p>
+                <p class="tiny">People: {{ task.people_json|join(", ") if task.people_json else "—" }}</p>
+              </article>
+            {% else %}
+              <p class="empty-cell">No tracked tasks yet</p>
+            {% endfor %}
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-header">
+            <h2>Known people/entities</h2>
+            <span class="muted">{{ entities|length }} shown</span>
+          </div>
+          <div class="stack compact">
+            {% for entity in entities %}
+              <article class="list-card">
+                <div class="list-card-top">
+                  <h3>{{ entity.name }}</h3>
+                  <span class="pill">{{ entity.entity_type }}</span>
+                </div>
+                <p class="tiny">Updated {{ entity.updated_at }}</p>
+              </article>
+            {% else %}
+              <p class="empty-cell">No stored entities yet</p>
+            {% endfor %}
+          </div>
+        </section>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Stored work items</h2>
+          <span class="muted">{{ items|length }} most recent shown</span>
+        </div>
+        <div class="stack">
+          {% for item in items %}
+            <article class="item-card">
+              <div class="item-card-top">
+                <div>
+                  <div class="row">
+                    <span class="pill source">{{ item.source }}</span>
+                    {% if item.classification %}
+                      <span class="pill">{{ item.classification }}</span>
+                    {% endif %}
+                    {% if item.needs_action %}
+                      <span class="pill action">needs action</span>
+                    {% endif %}
+                  </div>
+                  <h3>{{ item.title }}</h3>
+                </div>
+                <time>{{ item.timestamp }}</time>
+              </div>
+              <p>{{ item.short_summary or item.content[:220] }}</p>
+              <p class="tiny">
+                People: {{ item.people_json|join(", ") if item.people_json else "—" }}
+                · Dedupe key: {{ item.dedupe_key }}
+              </p>
+              <details>
+                <summary>View full item</summary>
+                <pre>{{ item.metadata_json | prettyjson }}</pre>
+                <pre>{{ item.content }}</pre>
+              </details>
+            </article>
+          {% else %}
+            <div class="empty-state">
+              <h3>No stored work items</h3>
+              <p>Ingested Gmail, Slack, Notion, and Jira data will show up here.</p>
+            </div>
+          {% endfor %}
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,28 @@
+[
+  {
+    "external_id": "jira-1",
+    "timestamp": "2026-04-22T08:15:00+00:00",
+    "title": "JIRA-123: Fix summary deduplication bug",
+    "content": "Assigned to you. Latest comment says please confirm the merge logic before noon.",
+    "people": ["Bob"],
+    "thread_id": "JIRA-123",
+    "metadata": {
+      "issue_key": "JIRA-123",
+      "status": "In Progress",
+      "source_url": "https://jira.example.com/browse/JIRA-123"
+    }
+  },
+  {
+    "external_id": "jira-2",
+    "timestamp": "2026-04-22T14:30:00+00:00",
+    "title": "ENG-77: Staging deployment blocked",
+    "content": "Deployment is blocked by a failed schema migration. Waiting on infra.",
+    "people": ["Carol"],
+    "thread_id": "ENG-77",
+    "metadata": {
+      "issue_key": "ENG-77",
+      "status": "Blocked",
+      "source_url": "https://jira.example.com/browse/ENG-77"
+    }
+  }
+]

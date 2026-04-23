@@ -1,0 +1,26 @@
+[
+  {
+    "external_id": "C123:1713772200.000100",
+    "timestamp": "2026-04-22T09:10:00+00:00",
+    "title": "@you can you review JIRA-123 today?",
+    "content": "@you can you review JIRA-123 today? We need your input before release.",
+    "people": ["bob"],
+    "thread_id": "1713772200.000100",
+    "metadata": {
+      "channel_id": "C123",
+      "source_url": "https://slack.com/app_redirect?channel=C123&message_ts=1713772200.000100"
+    }
+  },
+  {
+    "external_id": "D999:1713783000.000200",
+    "timestamp": "2026-04-22T12:10:00+00:00",
+    "title": "Blocked on staging deploy",
+    "content": "I am blocked on staging deploy because the migration failed again.",
+    "people": ["carol"],
+    "thread_id": "1713783000.000200",
+    "metadata": {
+      "channel_id": "D999",
+      "source_url": "https://slack.com/app_redirect?channel=D999&message_ts=1713783000.000200"
+    }
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "external_id": "notion-page-1",
+    "timestamp": "2026-04-22T10:45:00+00:00",
+    "title": "Finalize onboarding checklist",
+    "content": "Status: In Progress",
+    "people": ["Dana"],
+    "thread_id": null,
+    "metadata": {
+      "status": "In Progress",
+      "url": "https://www.notion.so/notion-page-1"
+    }
+  },
+  {
+    "external_id": "notion-page-2",
+    "timestamp": "2026-04-22T13:45:00+00:00",
+    "title": "Vendor security review",
+    "content": "Status: Blocked because waiting on questionnaire",
+    "people": ["Security Team"],
+    "thread_id": null,
+    "metadata": {
+      "status": "Blocked",
+      "url": "https://www.notion.so/notion-page-2"
+    }
+  }
+]

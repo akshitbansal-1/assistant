@@ -1,0 +1,26 @@
+[
+  {
+    "external_id": "gmail-msg-1",
+    "timestamp": "2026-04-22T07:30:00+00:00",
+    "title": "Need a decision on API rollout",
+    "content": "Can you approve the staged rollout for the daily intelligence agent by EOD?",
+    "people": ["Alice <alice@example.com>", "You <you@example.com>"],
+    "thread_id": "gmail-thread-1",
+    "metadata": {
+      "labels": ["INBOX", "IMPORTANT"],
+      "source_url": "https://mail.google.com/mail/u/0/#all/gmail-msg-1"
+    }
+  },
+  {
+    "external_id": "gmail-msg-2",
+    "timestamp": "2026-04-22T18:00:00+00:00",
+    "title": "RE: Waiting on legal review",
+    "content": "We are blocked until legal signs off on the data retention clause.",
+    "people": ["Ravi <ravi@example.com>"],
+    "thread_id": "gmail-thread-2",
+    "metadata": {
+      "labels": ["INBOX"],
+      "source_url": "https://mail.google.com/mail/u/0/#all/gmail-msg-2"
+    }
+  }
+]

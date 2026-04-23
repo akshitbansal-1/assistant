@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Work Intelligence UI</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Daily Work Intelligence Agent</p>
+          <h1>Stored workspace intelligence</h1>
+          <p class="lede">
+            Browse linked accounts, historical summaries, and the normalized data collected so far.
+          </p>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Users</h2>
+          <span class="muted">{{ users|length }} total</span>
+        </div>
+        {% if oauth_error %}
+          <div class="banner error">OAuth flow failed: {{ oauth_error }}</div>
+        {% endif %}
+        {% if users %}
+          <div class="card-grid">
+            {% for card in users %}
+              <a class="user-card" href="/ui/users/{{ card.user.email }}">
+                <div class="user-card-top">
+                  <h3>{{ card.user.name or card.user.email }}</h3>
+                  <span class="pill">{{ card.user.email }}</span>
+                </div>
+                <div class="button-row">
+                  <span class="button-like">Connect Google</span>
+                  <span class="button-like">Connect Slack</span>
+                  <span class="button-like">Connect Notion</span>
+                </div>
+                <dl class="stats-grid">
+                  <div>
+                    <dt>Accounts</dt>
+                    <dd>{{ card.account_count }}</dd>
+                  </div>
+                  <div>
+                    <dt>Summaries</dt>
+                    <dd>{{ card.summary_count }}</dd>
+                  </div>
+                  <div>
+                    <dt>Items</dt>
+                    <dd>{{ card.item_count }}</dd>
+                  </div>
+                  <div>
+                    <dt>Tracked</dt>
+                    <dd>{{ card.task_count }}</dd>
+                  </div>
+                </dl>
+              </a>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state">
+            <h3>No users yet</h3>
+            <p>Create or link an account through the API, then this UI will populate automatically.</p>
+          </div>
+        {% endif %}
+      </section>
+    </main>
+  </body>
+</html>
