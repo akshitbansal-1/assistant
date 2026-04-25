@@ -85,8 +85,8 @@ mkdir -p logs
 log "Starting API server…"
 echo ""
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "${BOLD}  🚀  http://localhost:8000${NC}"
-echo -e "${BOLD}  📖  http://localhost:8000/docs${NC}"
+echo -e "${BOLD}  🚀  http://localhost:3000${NC}"
+echo -e "${BOLD}  📖  http://localhost:3000/docs${NC}"
 echo -e "${BOLD}  Press Ctrl+C to stop all processes${NC}"
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
@@ -94,5 +94,5 @@ echo ""
 # Run uvicorn in the foreground so its output stays in the terminal
 exec .venv/bin/uvicorn app.main:app \
   --host "${APP_HOST:-0.0.0.0}" \
-  --port "${APP_PORT:-8000}" \
+  --port "${APP_PORT:-3000}" \
   --reload

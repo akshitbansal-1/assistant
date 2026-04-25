@@ -59,6 +59,8 @@ class BaseConnector(ABC):
     ) -> dict[str, Any]:
         with httpx.Client(timeout=self.timeout) as client:
             response = client.request(method, url, headers=headers, params=params, json=json, data=data)
+            if response.is_error:
+                logger.warning("API error %s %s: %s", response.status_code, url, response.text[:400])
             response.raise_for_status()
             if not response.content:
                 return {}

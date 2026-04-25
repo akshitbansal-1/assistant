@@ -28,14 +28,14 @@ class DailyWorkPipeline:
         self.summary = SummaryService()
         self.notifications = NotificationService()
 
-    def ingest_data(self, db: Session, user_email: str, lookback_hours: int = 24) -> list[WorkItem]:
+    def ingest_data(self, db: Session, user_email: str, lookback_hours: int = 1) -> list[WorkItem]:
         user = db.query(User).filter(User.email == user_email).first()
         if not user:
             raise ValueError(f"User not found: {user_email}")
         start_at, end_at = lookback_window(lookback_hours)
         records: list[WorkItem] = []
         for account in self.accounts.active_accounts_for_user(db, user_email):
-            raw_items = self.ingestion.fetch_raw_items(account, start_at, end_at)
+            raw_items = self.ingestion.fetch_raw_items(db, account, start_at, end_at)
             for raw_item in raw_items:
                 normalized = self.normalization.normalize_item(account, raw_item)
                 records.append(self.ingestion.upsert_item(db, user.id, normalized))
@@ -46,9 +46,7 @@ class DailyWorkPipeline:
         return items
 
     def classify_items(self, db: Session, items: list[WorkItem]) -> list[WorkItem]:
-        for item in items:
-            self.intelligence.classify(db, item)
-        db.flush()
+        self.intelligence.classify_all(db, items)
         return items
 
     def deduplicate_items(self, items: list[WorkItem]) -> list[dict]:
@@ -61,7 +59,10 @@ class DailyWorkPipeline:
 
         items = (
             db.query(WorkItem)
-            .filter(WorkItem.user_id == user.id)
+            .filter(
+                WorkItem.user_id == user.id,
+                (WorkItem.needs_action.is_(True)) | (WorkItem.classification.in_(["task", "follow_up", "blocker", "decision"])),
+            )
             .order_by(WorkItem.timestamp.desc())
             .all()
         )
@@ -71,9 +72,9 @@ class DailyWorkPipeline:
             if self._as_utc(item.timestamp) >= window_start and self._as_utc(item.timestamp) <= window_end
         ]
         deduped_items = self.deduplicate_items(recent_items)
-        self.memory.update_entities(db, user.id, deduped_items)
+        self.memory.update_entities(db, user.id, deduped_items, user_email=user_email)
         already_tracked = self.memory.update_tasks(db, user.id, deduped_items)
-        summary_payload = self.summary.build_summary_payload(deduped_items, already_tracked)
+        summary_payload = self.summary.build_summary_payload(deduped_items, already_tracked, user_email=user_email)
         human_readable = self.summary.render_human_readable(summary_payload)
         summary_record = self.summary.store_summary(
             db,
@@ -104,8 +105,19 @@ class DailyWorkPipeline:
             return value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc)
 
-    def run(self, db: Session, user_email: str, lookback_hours: int = 24, delivery_channel: str = "db") -> dict:
+    def _prune_info_items(self, db: Session, items: list[WorkItem]) -> list[WorkItem]:
+        actionable = []
+        for item in items:
+            if not item.needs_action and item.classification == "info":
+                db.delete(item)
+            else:
+                actionable.append(item)
+        db.flush()
+        return actionable
+
+    def run(self, db: Session, user_email: str, lookback_hours: int = 1, delivery_channel: str = "db") -> dict:
         items = self.ingest_data(db, user_email, lookback_hours=lookback_hours)
         normalized_items = self.normalize_data(items)
         self.classify_items(db, normalized_items)
+        self._prune_info_items(db, normalized_items)
         return self.generate_summary(db, user_email, lookback_hours=lookback_hours, delivery_channel=delivery_channel)

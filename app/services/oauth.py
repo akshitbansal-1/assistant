@@ -81,7 +81,7 @@ class OAuthService:
             payload = response.json()
         expires_in = payload.get("expires_in")
         if expires_in:
-            payload["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            payload["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
         return payload
 
     def refresh_token(self, provider: str, refresh_token: str) -> dict[str, Any]:
@@ -100,7 +100,7 @@ class OAuthService:
             payload = response.json()
         expires_in = payload.get("expires_in")
         if expires_in:
-            payload["expires_at"] = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+            payload["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
         return payload
 
     def encode_state(self, payload: dict[str, Any]) -> str:

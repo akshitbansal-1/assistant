@@ -141,7 +141,7 @@ def run_pipeline(payload: PipelineRunRequest, db: Session = Depends(get_db)) -> 
         result = pipeline.run(
             db,
             user_email=payload.user_email,
-            lookback_hours=payload.lookback_hours,
+            lookback_hours=4, # TODO change this
             delivery_channel=payload.delivery_channel,
         )
     except ValueError as exc:

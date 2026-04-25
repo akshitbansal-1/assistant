@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Any
 
@@ -7,6 +8,12 @@ from sqlalchemy.orm import Session
 
 from app.llm.service import LLMService
 from app.models.summary import DailySummary
+
+_AUTOMATED_SENDER_RE = re.compile(
+    r"(no.?reply|noreply|do.not.reply|mailer.daemon|postmaster|bounce|"
+    r"notifications?@|alerts?@|support@|help@|info@|newsletter|automated)",
+    re.IGNORECASE,
+)
 
 
 class SummaryService:
@@ -17,6 +24,7 @@ class SummaryService:
         self,
         deduped_items: list[dict[str, Any]],
         already_tracked: list[dict[str, Any]],
+        user_email: str = "",
     ) -> dict[str, Any]:
         blockers = [self._view(item) for item in deduped_items if item["classification"] == "blocker"][:7]
         priority = [
@@ -28,30 +36,31 @@ class SummaryService:
         seen_people = set()
         for item in priority:
             for person in item["people"]:
-                if person and person not in seen_people:
-                    seen_people.add(person)
-                    people_set.append(
-                        {
-                            "title": person,
-                            "summary": f"Reach out regarding {item['title']}",
-                            "source": item["source"],
-                            "people": [person],
-                            "needs_action": True,
-                            "metadata": {"related_title": item["title"]},
-                        }
-                    )
-        new_items = [
-            self._view(item)
-            for item in deduped_items
-            if item["classification"] == "info" and not item["needs_action"]
-        ][:7]
+                if not person:
+                    continue
+                if person in seen_people:
+                    continue
+                if user_email and person.lower() == user_email.lower():
+                    continue
+                if _AUTOMATED_SENDER_RE.search(person):
+                    continue
+                seen_people.add(person)
+                people_set.append(
+                    {
+                        "title": person,
+                        "summary": f"Reach out regarding {item['title']}",
+                        "source": item["source"],
+                        "people": [person],
+                        "needs_action": True,
+                        "metadata": {"related_title": item["title"]},
+                    }
+                )
         payload = {
             "priority_actions": priority,
             "people_to_talk_to": people_set[:7],
             "blockers": blockers,
-            "new_items": new_items,
             "already_tracked_tasks": [self._view(item) for item in already_tracked][:7],
-            "narrative": self._render_narrative(priority, blockers, people_set, new_items, already_tracked),
+            "narrative": self._render_narrative(priority, blockers, people_set, already_tracked),
         }
         llm_payload = {"items": deduped_items, **payload}
         llm_result = self.llm.summarize(llm_payload)
@@ -104,7 +113,6 @@ class SummaryService:
             ("Priority actions", summary_payload.get("priority_actions", [])),
             ("People to talk to", summary_payload.get("people_to_talk_to", [])),
             ("Blockers", summary_payload.get("blockers", [])),
-            ("What is new", summary_payload.get("new_items", [])),
             ("Already tracked tasks", summary_payload.get("already_tracked_tasks", [])),
         ]
         for heading, items in sections:
@@ -127,14 +135,12 @@ class SummaryService:
         priority: list[dict[str, Any]],
         blockers: list[dict[str, Any]],
         people: list[dict[str, Any]],
-        new_items: list[dict[str, Any]],
         already_tracked: list[dict[str, Any]],
     ) -> str:
         return (
             f"{len(priority)} priority actions, "
             f"{len(blockers)} blockers, "
             f"{len(people)} people to talk to, "
-            f"{len(new_items)} informational updates, "
             f"{len(already_tracked)} already tracked tasks."
         )
 

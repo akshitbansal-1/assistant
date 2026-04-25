@@ -35,16 +35,20 @@ class GmailConnector(BaseConnector):
             items.append(self._normalize_message(payload))
         return items
 
+    # Only the headers that are useful for classification/filtering.
+    _KEEP_HEADERS = {"from", "to", "cc", "reply-to", "list-unsubscribe", "x-mailer", "feedback-id"}
+
     def _normalize_message(self, payload: dict[str, Any]) -> dict[str, Any]:
-        headers = {entry["name"].lower(): entry["value"] for entry in payload.get("payload", {}).get("headers", [])}
+        all_headers = {entry["name"].lower(): entry["value"] for entry in payload.get("payload", {}).get("headers", [])}
         internal_date = payload.get("internalDate")
         timestamp = datetime.fromtimestamp(int(internal_date) / 1000, tz=timezone.utc) if internal_date else datetime.now(timezone.utc)
-        date_header = headers.get("date")
+        date_header = all_headers.get("date")
         if date_header:
             timestamp = parsedate_to_datetime(date_header).astimezone(timezone.utc)
         snippet = payload.get("snippet", "")
-        subject = headers.get("subject", "(No subject)")
-        people = [headers.get(name) for name in ("from", "to", "cc") if headers.get(name)]
+        subject = all_headers.get("subject", "(No subject)")
+        people = [all_headers.get(name) for name in ("from", "to", "cc") if all_headers.get(name)]
+        useful_headers = {k: v for k, v in all_headers.items() if k in self._KEEP_HEADERS}
         return {
             "external_id": payload["id"],
             "timestamp": timestamp.isoformat(),
@@ -54,7 +58,7 @@ class GmailConnector(BaseConnector):
             "thread_id": payload.get("threadId"),
             "metadata": {
                 "labels": payload.get("labelIds", []),
-                "headers": headers,
+                "headers": useful_headers,
                 "source_url": f"https://mail.google.com/mail/u/0/#all/{payload['id']}",
             },
         }
