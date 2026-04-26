@@ -152,12 +152,15 @@ class LLMService:
 
     def _mock_json(self, _system_prompt: str, user_prompt: str) -> dict[str, Any]:
         try:
-            item = json.loads(user_prompt)
+            parsed = json.loads(user_prompt)
         except json.JSONDecodeError:
             return {}
-        if "items" in item or "priority_actions" in item:
-            return item
-        return self._heuristic_classification(item)
+        # Batch classification: payload is a list of items
+        if isinstance(parsed, list):
+            return {"classifications": [self._heuristic_classification(item) for item in parsed]}
+        if "items" in parsed or "priority_actions" in parsed:
+            return parsed
+        return self._heuristic_classification(parsed)
 
     def _pre_classify(self, item: dict[str, Any]) -> dict[str, Any] | None:
         """Return a confident classification without calling the LLM, or None if uncertain."""

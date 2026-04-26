@@ -8,6 +8,7 @@ class PipelineRunRequest(BaseModel):
     user_email: str
     lookback_hours: int = Field(default=24, ge=1, le=168)
     delivery_channel: str = "db"
+    force_fetch: bool = False
 
 
 class SummarySectionItem(BaseModel):

@@ -40,6 +40,7 @@ class LinkedAccount(Base):
     refresh_token: Mapped[str] = mapped_column(Text, nullable=True)
     token_type: Mapped[str] = mapped_column(String(50), nullable=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    last_fetched_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     metadata_json: Mapped[dict] = mapped_column(json_type(), default=dict)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)

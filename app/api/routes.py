@@ -141,8 +141,9 @@ def run_pipeline(payload: PipelineRunRequest, db: Session = Depends(get_db)) -> 
         result = pipeline.run(
             db,
             user_email=payload.user_email,
-            lookback_hours=4, # TODO change this
+            lookback_hours=payload.lookback_hours,
             delivery_channel=payload.delivery_channel,
+            force_fetch=payload.force_fetch,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

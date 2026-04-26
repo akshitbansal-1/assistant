@@ -28,17 +28,23 @@ class DailyWorkPipeline:
         self.summary = SummaryService()
         self.notifications = NotificationService()
 
-    def ingest_data(self, db: Session, user_email: str, lookback_hours: int = 1) -> list[WorkItem]:
+    def ingest_data(self, db: Session, user_email: str, lookback_hours: int = 1, force_fetch: bool = False) -> list[WorkItem]:
         user = db.query(User).filter(User.email == user_email).first()
         if not user:
             raise ValueError(f"User not found: {user_email}")
-        start_at, end_at = lookback_window(lookback_hours)
+        _, end_at = lookback_window(lookback_hours)
         records: list[WorkItem] = []
         for account in self.accounts.active_accounts_for_user(db, user_email):
+            if not force_fetch and account.last_fetched_at is not None:
+                start_at = account.last_fetched_at
+            else:
+                start_at, _ = lookback_window(lookback_hours)
             raw_items = self.ingestion.fetch_raw_items(db, account, start_at, end_at)
             for raw_item in raw_items:
                 normalized = self.normalization.normalize_item(account, raw_item)
                 records.append(self.ingestion.upsert_item(db, user.id, normalized))
+            account.last_fetched_at = end_at
+            db.flush()
         db.flush()
         return records
 
@@ -115,8 +121,8 @@ class DailyWorkPipeline:
         db.flush()
         return actionable
 
-    def run(self, db: Session, user_email: str, lookback_hours: int = 1, delivery_channel: str = "db") -> dict:
-        items = self.ingest_data(db, user_email, lookback_hours=lookback_hours)
+    def run(self, db: Session, user_email: str, lookback_hours: int = 1, delivery_channel: str = "db", force_fetch: bool = False) -> dict:
+        items = self.ingest_data(db, user_email, lookback_hours=lookback_hours, force_fetch=force_fetch)
         normalized_items = self.normalize_data(items)
         self.classify_items(db, normalized_items)
         self._prune_info_items(db, normalized_items)

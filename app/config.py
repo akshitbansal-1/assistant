@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     enable_mock_connectors: bool = True
     default_user_email: str = "demo@example.com"
 
+    enable_auth: bool = False
+    auth_google_redirect_uri: str | None = None
+
     daily_summary_hour: int = 8
     daily_summary_minute: int = 0
 

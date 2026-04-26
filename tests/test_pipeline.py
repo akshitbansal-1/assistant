@@ -23,12 +23,15 @@ def test_pipeline_end_to_end_idempotent():
         db.commit()
 
         pipeline = DailyWorkPipeline()
-        result_one = pipeline.run(db, user_email=user_email, lookback_hours=24, delivery_channel="db")
+        # Use 168h (1 week) so that sample data timestamps (a few days old) fall in the window
+        result_one = pipeline.run(db, user_email=user_email, lookback_hours=168, delivery_channel="db")
         db.commit()
-        result_two = pipeline.run(db, user_email=user_email, lookback_hours=24, delivery_channel="db")
+        result_two = pipeline.run(db, user_email=user_email, lookback_hours=168, delivery_channel="db")
         db.commit()
 
+        # Jira sample has actionable items (blocker + task keywords) — at least one should survive pruning
         assert result_one["counts"]["items"] > 0
+        # Idempotency: second run must produce the same summary counts
         assert result_two["counts"]["items"] == result_one["counts"]["items"]
         assert len(result_one["summary"]["priority_actions"]) <= 7
         assert "blockers" in result_one["summary"]

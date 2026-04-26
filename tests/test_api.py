@@ -28,10 +28,11 @@ def test_api_pipeline_run():
 
 def test_ui_pages_render():
     client = TestClient(app)
+    # /ui redirects to the default user dashboard in local (no-auth) mode
     response = client.get("/ui")
     assert response.status_code == 200
-    assert "Stored workspace intelligence" in response.text
+    assert "Work Intelligence" in response.text
 
-    detail = client.get("/ui/users/demo@example.com")
+    detail = client.get("/ui/dashboard")
     assert detail.status_code == 200
-    assert "Add Google account" in detail.text
+    assert "Run Pipeline" in detail.text

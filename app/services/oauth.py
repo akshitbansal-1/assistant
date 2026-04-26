@@ -128,6 +128,19 @@ class OAuthService:
         import httpx
 
         provider = provider.lower()
+        if provider == "google_login":
+            access_token = token_payload.get("access_token")
+            with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
+                response = client.get(
+                    "https://www.googleapis.com/oauth2/v2/userinfo",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                )
+                response.raise_for_status()
+                profile = response.json()
+            return {
+                "email": profile.get("email", ""),
+                "name": profile.get("name") or profile.get("email", ""),
+            }
         if provider == "gmail":
             access_token = token_payload.get("access_token")
             with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
@@ -210,6 +223,19 @@ class OAuthService:
                 "redirect_uri": self.settings.jira_redirect_uri,
                 "scopes": ["read:jira-work", "read:jira-user", "offline_access"],
                 "authorize_params": {"audience": "api.atlassian.com", "prompt": "consent"},
+            },
+            "google_login": {
+                "authorize_url": "https://accounts.google.com/o/oauth2/v2/auth",
+                "token_url": "https://oauth2.googleapis.com/token",
+                "client_id": self.settings.google_client_id,
+                "client_secret": self.settings.google_client_secret,
+                "redirect_uri": self.settings.auth_google_redirect_uri,
+                "scopes": [
+                    "openid",
+                    "https://www.googleapis.com/auth/userinfo.email",
+                    "https://www.googleapis.com/auth/userinfo.profile",
+                ],
+                "authorize_params": {"access_type": "online"},
             },
         }
         config = mapping.get(provider)

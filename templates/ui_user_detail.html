@@ -12,10 +12,13 @@
         <div class="nav-logo">⚡</div>
         Work Intelligence
       </a>
+      {% if enable_auth %}
+        <a class="btn btn-secondary" href="/auth/logout" style="margin-left:auto;">Sign out</a>
+      {% endif %}
     </nav>
 
     <main class="shell">
-      <a class="back-link" href="/ui">← All users</a>
+      <a class="back-link" href="/ui">← Dashboard</a>
 
       {% if linked_provider %}
         <div class="banner banner-success">✓ {{ linked_provider|capitalize }} account linked successfully.</div>
@@ -26,14 +29,19 @@
           <h1 class="page-title">{{ user.name or user.email.split("@")[0] }}</h1>
           <p class="page-subtitle">{{ user.email }}</p>
           <div class="btn-row">
-            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/google">+ Google</a>
-            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/slack">+ Slack</a>
-            <a class="btn btn-secondary" href="/ui/users/{{ user.email }}/connect/notion">+ Notion</a>
+            <a class="btn btn-secondary" href="/ui/connect/google">+ Google</a>
+            <a class="btn btn-secondary" href="/ui/connect/slack">+ Slack</a>
+            <a class="btn btn-secondary" href="/ui/connect/notion">+ Notion</a>
           </div>
         </div>
-        <button id="run-btn" class="btn btn-primary" onclick="runPipeline('{{ user.email }}')">
-          ▶ Run Pipeline
-        </button>
+        <div class="btn-row">
+          <button id="run-btn" class="btn btn-primary" onclick="runPipeline('{{ user.email }}', false)">
+            ▶ Run Pipeline
+          </button>
+          <button id="force-btn" class="btn btn-secondary" onclick="runPipeline('{{ user.email }}', true)">
+            ↺ Force Fetch
+          </button>
+        </div>
       </div>
 
       <div class="metric-strip">
@@ -60,6 +68,7 @@
                 <th>Identifier</th>
                 <th>Status</th>
                 <th>Expires</th>
+                <th>Last Fetched</th>
               </tr>
             </thead>
             <tbody>
@@ -76,6 +85,7 @@
                     </span>
                   </td>
                   <td class="tiny">{{ account.expires_at or "—" }}</td>
+                  <td class="tiny">{{ account.last_fetched_at or "Never" }}</td>
                 </tr>
               {% else %}
                 <tr><td colspan="5" class="empty-cell">No linked accounts — connect a provider above</td></tr>
@@ -222,21 +232,27 @@
     <div id="pipeline-toast"></div>
 
     <script>
-      async function runPipeline(userEmail) {
-        const btn = document.getElementById('run-btn');
+      async function runPipeline(userEmail, forceFetch) {
+        const runBtn = document.getElementById('run-btn');
+        const forceBtn = document.getElementById('force-btn');
         const toast = document.getElementById('pipeline-toast');
 
-        btn.disabled = true;
-        btn.textContent = '⏳ Running…';
+        runBtn.disabled = true;
+        forceBtn.disabled = true;
+        if (forceFetch) {
+          forceBtn.textContent = '⏳ Fetching…';
+        } else {
+          runBtn.textContent = '⏳ Running…';
+        }
 
         toast.className = 'show loading';
-        toast.textContent = 'Pipeline running…';
+        toast.textContent = forceFetch ? 'Force-fetching all data…' : 'Pipeline running…';
 
         try {
           const res = await fetch('/api/v1/pipeline/run', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_email: userEmail, lookback_hours: 24 }),
+            body: JSON.stringify({ user_email: userEmail, lookback_hours: 24, force_fetch: forceFetch }),
           });
 
           if (!res.ok) {
@@ -247,7 +263,8 @@
           const data = await res.json();
           toast.className = 'show success';
           toast.textContent = `✓ Summary generated for ${data.summary_date}`;
-          btn.textContent = '✓ Done';
+          runBtn.textContent = '✓ Done';
+          forceBtn.textContent = '↺ Force Fetch';
 
           setTimeout(() => {
             toast.className = '';
@@ -256,8 +273,10 @@
         } catch (err) {
           toast.className = 'show error';
           toast.textContent = `✗ ${err.message}`;
-          btn.disabled = false;
-          btn.textContent = '▶ Run Pipeline';
+          runBtn.disabled = false;
+          forceBtn.disabled = false;
+          runBtn.textContent = '▶ Run Pipeline';
+          forceBtn.textContent = '↺ Force Fetch';
           setTimeout(() => { toast.className = ''; }, 4000);
         }
       }
