@@ -4,6 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 from dateutil.parser import parse as parse_dt
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,10 @@ from app.services.oauth import OAuthService, TokenCipher
 
 
 logger = logging.getLogger(__name__)
+
+
+class AccountAuthError(ValueError):
+    """Raised when a linked account needs user re-authentication."""
 
 
 class IngestionService:
@@ -35,43 +40,111 @@ class IngestionService:
         start_at: datetime,
         end_at: datetime,
     ) -> list[dict[str, Any]]:
-        account = self._refresh_if_expired(db, account)
+        account = self._refresh_if_needed(db, account, reason="pre_fetch")
         connector = self.connectors[account.source]
-        return connector.fetch_recent_items(account, start_at, end_at)
+        try:
+            return connector.fetch_recent_items(account, start_at, end_at)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 401:
+                raise
+            logger.warning(
+                "Connector returned 401; refreshing token and retrying once account=%s source=%s",
+                account.id,
+                account.source,
+            )
+            account = self._refresh_if_needed(db, account, reason="401_retry", force=True)
+            return connector.fetch_recent_items(account, start_at, end_at)
 
     def _refresh_if_expired(self, db: Session, account: LinkedAccount) -> LinkedAccount:
-        if not account.refresh_token or not account.expires_at:
+        return self._refresh_if_needed(db, account, reason="legacy_expiry_check")
+
+    def _refresh_if_needed(
+        self,
+        db: Session,
+        account: LinkedAccount,
+        *,
+        reason: str,
+        force: bool = False,
+    ) -> LinkedAccount:
+        if not account.refresh_token:
+            if force:
+                raise AccountAuthError(
+                    f"{account.source} account '{account.label}' needs reconnect: no refresh token is available."
+                )
             return account
 
         now = datetime.now(timezone.utc)
         expires_at = account.expires_at
-        if expires_at.tzinfo is None:
+        if expires_at is not None and expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at is None:
+            logger.info(
+                "Refreshing token because expiry is missing account=%s source=%s reason=%s",
+                account.id,
+                account.source,
+                reason,
+            )
 
-        if expires_at > now + timedelta(minutes=5):
+        should_refresh = force or expires_at is None or expires_at <= now + timedelta(minutes=5)
+        if not should_refresh:
             return account
 
         cipher = TokenCipher()
-        raw_refresh = cipher.decrypt(account.refresh_token)
+        try:
+            raw_refresh = cipher.decrypt(account.refresh_token)
+        except Exception as exc:
+            logger.warning("Refresh token decrypt failed account=%s source=%s error=%s", account.id, account.source, exc)
+            if force:
+                raise AccountAuthError(
+                    f"{account.source} account '{account.label}' needs reconnect: stored refresh token could not be read."
+                ) from exc
+            return account
         if not raw_refresh:
+            if force:
+                raise AccountAuthError(
+                    f"{account.source} account '{account.label}' needs reconnect: stored refresh token could not be read."
+                )
             return account
 
         try:
+            logger.info(
+                "Refreshing access token account=%s source=%s reason=%s force=%s",
+                account.id,
+                account.source,
+                reason,
+                force,
+            )
             new_payload = OAuthService().refresh_token(account.source, raw_refresh)
         except Exception as exc:
-            logger.warning("Token refresh failed for account %s (%s): %s", account.id, account.source, exc)
+            logger.warning(
+                "Token refresh failed account=%s source=%s reason=%s error=%s",
+                account.id,
+                account.source,
+                reason,
+                exc,
+            )
+            if force:
+                raise AccountAuthError(
+                    f"{account.source} account '{account.label}' needs reconnect: token refresh failed."
+                ) from exc
             return account
 
         new_access = new_payload.get("access_token")
-        if new_access:
-            account.access_token = cipher.encrypt(new_access) or new_access
+        if not new_access:
+            logger.warning("Token refresh response missing access_token account=%s source=%s", account.id, account.source)
+            if force:
+                raise AccountAuthError(
+                    f"{account.source} account '{account.label}' needs reconnect: token refresh returned no access token."
+                )
+            return account
+        account.access_token = cipher.encrypt(new_access) or new_access
         if new_payload.get("refresh_token"):
             account.refresh_token = cipher.encrypt(new_payload["refresh_token"]) or new_payload["refresh_token"]
         raw_exp = new_payload.get("expires_at")
         if raw_exp:
             account.expires_at = parse_dt(raw_exp) if isinstance(raw_exp, str) else raw_exp
         db.flush()
-        logger.info("Refreshed access token for account %s (%s)", account.id, account.source)
+        logger.info("Refreshed access token account=%s source=%s reason=%s", account.id, account.source, reason)
         return account
 
     def upsert_item(self, db: Session, user_id: str, item: dict[str, Any]) -> WorkItem:

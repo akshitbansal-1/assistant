@@ -27,10 +27,14 @@ class Settings(BaseSettings):
     daily_summary_minute: int = 0
 
     llm_provider: str = "mock"
-    llm_model: str = "gemini-2.5-flash"
+    llm_model: str | None = None
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.openai.com/v1"
     gemini_api_key: str | None = None
+    openrouter_api_key: str | None = None
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_site_url: str | None = None
+    openrouter_app_name: str = "Communication Loop Tracker"
 
     google_client_id: str | None = None
     google_client_secret: str | None = None
@@ -39,6 +43,7 @@ class Settings(BaseSettings):
     slack_client_id: str | None = None
     slack_client_secret: str | None = None
     slack_redirect_uri: str | None = None
+    slack_signing_secret: str | None = None
 
     notion_client_id: str | None = None
     notion_client_secret: str | None = None
@@ -47,6 +52,7 @@ class Settings(BaseSettings):
     jira_client_id: str | None = None
     jira_client_secret: str | None = None
     jira_redirect_uri: str | None = None
+    jira_stale_days: int = Field(default=3, ge=1, le=90)
 
     request_timeout_seconds: int = Field(default=20, ge=1, le=120)
     llm_timeout_seconds: int = Field(default=30, ge=1, le=120)

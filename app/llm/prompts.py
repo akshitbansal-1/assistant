@@ -39,3 +39,30 @@ RULES:
 - people_to_talk_to contains only real human colleagues — never no-reply addresses, mailing lists, or the user themselves.
 - Limit priority_actions to at most 7 items.
 """.strip()
+
+
+COMMITMENT_EXTRACTION_SYSTEM_PROMPT = """
+You extract coordination commitments from workplace messages.
+Return strict JSON with key "commitments" containing an array.
+
+Each commitment must include:
+- owner: person who promised or appears responsible, string or null
+- requester: person asking or depending on the work, string or null
+- task_title: short task, project, or ticket title
+- jira_key: Jira issue key if present, else null
+- project: project name if obvious, else null
+- commitment_text: the exact promised work in concise form
+- due_date: ISO date if explicit or strongly implied, else null
+- status: one of open, done, blocked, stale, suggestion
+- source_system: source system string
+- source_url: source link if provided
+- source_message_id: message or issue id if provided
+- needs_follow_up: boolean
+- jira_appears_stale: boolean
+- confidence: number from 0 to 1
+
+Rules:
+- Do not invent owners, dates, blockers, or ETAs.
+- Low confidence means below 0.65.
+- Every extracted claim must be traceable to the provided source item.
+""".strip()

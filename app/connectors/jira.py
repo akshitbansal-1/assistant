@@ -37,6 +37,31 @@ class JiraConnector(BaseConnector):
         )
         return [self._normalize_issue(issue, base_url) for issue in payload.get("issues", [])]
 
+    def fetch_issue_by_key(self, account: LinkedAccount, issue_key: str) -> dict[str, Any] | None:
+        key = str(issue_key or "").strip().upper()
+        if not key:
+            return None
+        if self.use_sample_data(account):
+            for item in self.sample_items():
+                metadata = item.get("metadata") or {}
+                if metadata.get("issue_key") == key or str(item.get("title", "")).upper().startswith(f"{key}:"):
+                    return item
+            return None
+
+        token = self.get_access_token(account)
+        metadata = account.metadata_json or {}
+        base_url = metadata.get("base_url")
+        if not base_url:
+            raise ValueError("Jira account metadata must include base_url")
+
+        issue = self._request(
+            "GET",
+            f"{base_url.rstrip('/')}/rest/api/3/issue/{key}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            params={"fields": "summary,description,assignee,comment,updated,status"},
+        )
+        return self._normalize_issue(issue, base_url)
+
     def _normalize_issue(self, issue: dict[str, Any], base_url: str) -> dict[str, Any]:
         fields = issue.get("fields", {})
         assignee = fields.get("assignee") or {}

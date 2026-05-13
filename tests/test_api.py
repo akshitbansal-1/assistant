@@ -36,3 +36,9 @@ def test_ui_pages_render():
     detail = client.get("/ui/dashboard")
     assert detail.status_code == 200
     assert "Run Pipeline" in detail.text
+    assert "Connector health" in detail.text
+    assert "Coordination console" in detail.text
+    assert "whereis-person" in detail.text
+    assert "followup-question" in detail.text
+    assert "retrieve-jira" in detail.text
+    assert "memory-task" in detail.text

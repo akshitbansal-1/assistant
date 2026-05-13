@@ -31,7 +31,8 @@
           <div class="btn-row">
             <a class="btn btn-secondary" href="/ui/connect/google">+ Google</a>
             <a class="btn btn-secondary" href="/ui/connect/slack">+ Slack</a>
-            <a class="btn btn-secondary" href="/ui/connect/notion">+ Notion</a>
+            <button class="btn btn-secondary" onclick="document.getElementById('notion-modal').style.display='flex'">+ Notion</button>
+            <a class="btn btn-secondary" href="/ui/connect/jira">+ Jira</a>
           </div>
         </div>
         <div class="btn-row">
@@ -40,6 +41,9 @@
           </button>
           <button id="force-btn" class="btn btn-secondary" onclick="runPipeline('{{ user.email }}', true)">
             ↺ Force Fetch
+          </button>
+          <button id="stale-jira-btn" class="btn btn-secondary" onclick="detectStaleJira('{{ user.email }}')">
+            Jira hygiene
           </button>
         </div>
       </div>
@@ -51,6 +55,233 @@
             <div class="metric-value">{{ value }}</div>
           </div>
         {% endfor %}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Connector health</span>
+          <span class="panel-count">{{ connector_health|length }}</span>
+        </div>
+        {% if connector_health %}
+          <div class="health-grid">
+            {% for health in connector_health %}
+              <div class="health-card">
+                <div class="list-card-top">
+                  <div>
+                    <div class="list-card-title">{{ health.label }}</div>
+                    <div class="tiny">{{ health.source }} · {{ health.identifier }}</div>
+                  </div>
+                  <span class="pill pill-{{ health.status }}">{{ health.status }}</span>
+                </div>
+                <p class="text-2" style="font-size:0.83rem; margin:8px 0 4px;">{{ health.summary }}</p>
+                {% if health.details %}<div class="tiny">{{ health.details }}</div>{% endif %}
+                <div class="tiny">Last fetched: {{ health.last_fetched_at or "Never" }}</div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="empty-state">
+            <h3>No connectors linked</h3>
+            <p>Connect Slack and Jira first for the pilot workflow.</p>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Coordination console</span>
+          <span class="panel-count">Slack-first</span>
+        </div>
+        <div class="console-grid">
+          <section class="tool-surface">
+            <div class="tool-head">
+              <span class="tool-title">Where is</span>
+              <span class="pill pill-neutral">source-backed</span>
+            </div>
+            <div class="field-grid two">
+              <label class="field">
+                <span>Person</span>
+                <input id="whereis-person" value="bob" placeholder="@person or name" />
+              </label>
+              <label class="field">
+                <span>Task or ticket</span>
+                <input id="whereis-task" value="JIRA-123" placeholder="JIRA-123 or task title" />
+              </label>
+            </div>
+            <button class="btn btn-primary" onclick="askWhereIs('{{ user.email }}')">Ask</button>
+          </section>
+
+          <section class="tool-surface">
+            <div class="tool-head">
+              <span class="tool-title">Follow up</span>
+              <span class="pill pill-neutral">approval-gated</span>
+            </div>
+            <div class="field-grid two">
+              <label class="field">
+                <span>Person</span>
+                <input id="followup-person" value="bob" placeholder="@person or name" />
+              </label>
+              <label class="field">
+                <span>Task or ticket</span>
+                <input id="followup-task" value="JIRA-123" placeholder="JIRA-123 or task title" />
+              </label>
+            </div>
+            <label class="field">
+              <span>Question</span>
+              <textarea id="followup-question" rows="2" placeholder="What is the current ETA?">What is the current ETA?</textarea>
+            </label>
+            <button class="btn btn-primary" onclick="createFollowUp('{{ user.email }}')">Draft follow-up</button>
+          </section>
+
+          <section class="tool-surface">
+            <div class="tool-head">
+              <span class="tool-title">Retrieve context</span>
+              <span class="pill pill-neutral">DB-first</span>
+            </div>
+            <div class="field-grid three">
+              <label class="field">
+                <span>Person</span>
+                <input id="retrieve-person" placeholder="optional" />
+              </label>
+              <label class="field">
+                <span>Jira key</span>
+                <input id="retrieve-jira" value="JIRA-123" placeholder="JIRA-123" />
+              </label>
+              <label class="field">
+                <span>Status</span>
+                <select id="retrieve-status">
+                  <option value="">Any</option>
+                  <option value="open">Open</option>
+                  <option value="blocked">Blocked</option>
+                  <option value="stale">Stale</option>
+                  <option value="done">Done</option>
+                </select>
+              </label>
+            </div>
+            <button class="btn btn-secondary" onclick="retrieveContext('{{ user.email }}')">Search context</button>
+          </section>
+
+          <section class="tool-surface">
+            <div class="tool-head">
+              <span class="tool-title">Memory</span>
+              <span class="pill pill-neutral">task lookup</span>
+            </div>
+            <label class="field">
+              <span>Task or ticket</span>
+              <input id="memory-task" value="JIRA-123" placeholder="JIRA-123 or task title" />
+            </label>
+            <div class="btn-row compact">
+              <button class="btn btn-secondary" onclick="lookupMemory('{{ user.email }}')">Lookup</button>
+              <button id="console-stale-jira-btn" class="btn btn-secondary" onclick="detectStaleJira('{{ user.email }}')">Jira hygiene</button>
+            </div>
+          </section>
+        </div>
+        <div id="console-result" class="console-result" hidden></div>
+      </div>
+
+      <!-- Communication loop dashboard -->
+      <div class="split-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Task memory</span>
+            <span class="panel-count">{{ comm_tasks|length }}</span>
+          </div>
+          {% if comm_tasks %}
+            {% for task in comm_tasks %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ task.jira_key or task.title }}</div>
+                  <span class="pill pill-neutral">{{ "%.2f"|format(task.confidence or 0) }}</span>
+                </div>
+                <p class="text-2" style="font-size:0.83rem; margin:0 0 4px;">{{ task.latest_status or "No status yet" }}</p>
+                {% if task.blocker %}<div class="tiny">Blocker: {{ task.blocker }}</div>{% endif %}
+                {% if task.eta %}<div class="tiny">ETA: {{ task.eta }}</div>{% endif %}
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No task memory yet</h3>
+              <p>Slack/Jira commitments will appear here after ingestion.</p>
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Pending follow-ups</span>
+            <span class="panel-count">{{ pending_followups|length }}</span>
+          </div>
+          {% if pending_followups %}
+            {% for followup in pending_followups %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ followup.question }}</div>
+                  <span class="pill pill-action">{{ followup.status }}</span>
+                </div>
+                <div class="tiny">Created {{ followup.created_at }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No pending follow-ups</h3>
+              <p>Approved coordination nudges will be tracked here.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+
+      <div class="split-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Action proposals</span>
+            <span class="panel-count">{{ action_proposals|length }}</span>
+          </div>
+          {% if action_proposals %}
+            {% for proposal in action_proposals %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ proposal.title }}</div>
+                  <span class="pill pill-{{ proposal.target_system }}">{{ proposal.target_system }}</span>
+                </div>
+                <p class="text-2" style="font-size:0.83rem; margin:0 0 4px;">{{ proposal.reason or "Awaiting approval" }}</p>
+                <div class="btn-row" style="margin-top:8px;">
+                  <button class="btn btn-secondary" onclick="approveProposal('{{ proposal.id }}', false)">Approve</button>
+                  {% if proposal.target_system in ["slack", "jira"] %}
+                    <button class="btn btn-primary" onclick="approveProposal('{{ proposal.id }}', true)">Approve & send</button>
+                  {% endif %}
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No proposals awaiting approval</h3>
+              <p>Slack/Jira writes stay queued here until approved.</p>
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Overdue commitments</span>
+            <span class="panel-count">{{ overdue_commitments|length }}</span>
+          </div>
+          {% if overdue_commitments %}
+            {% for commitment in overdue_commitments %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ commitment.commitment_text }}</div>
+                  <span class="pill pill-action">{{ commitment.due_date }}</span>
+                </div>
+                <div class="tiny">{{ commitment.source_system }} · {{ "%.2f"|format(commitment.confidence or 0) }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No overdue commitments</h3>
+              <p>Open promises with due dates will show here.</p>
+            </div>
+          {% endif %}
+        </div>
       </div>
 
       <!-- Linked accounts -->
@@ -227,11 +458,101 @@
           </div>
         {% endif %}
       </div>
+
+      <div class="split-grid">
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Stale Jira drafts</span>
+            <span class="panel-count">{{ stale_jira|length }}</span>
+          </div>
+          {% if stale_jira %}
+            {% for proposal in stale_jira %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ proposal.payload_json.get("jira_key") or proposal.title }}</div>
+                  <span class="pill pill-action">{{ proposal.status }}</span>
+                </div>
+                <p class="text-2" style="font-size:0.83rem; margin:0 0 4px;">{{ proposal.reason }}</p>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No stale Jira drafts</h3>
+              <p>Detected Jira hygiene issues will create approval-gated drafts.</p>
+            </div>
+          {% endif %}
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Audit log</span>
+            <span class="panel-count">{{ audit_logs|length }}</span>
+          </div>
+          {% if audit_logs %}
+            {% for log in audit_logs %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div class="list-card-title">{{ log.action }}</div>
+                  <span class="pill pill-neutral">{{ log.entity_type }}</span>
+                </div>
+                <div class="tiny">{{ log.created_at }}</div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No audit events</h3>
+              <p>Proposal creation, approval, and execution events will appear here.</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
     </main>
+
+    <!-- Notion token modal -->
+    <div id="notion-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:1000; align-items:center; justify-content:center;">
+      <div style="background:#1e1e2e; border-radius:12px; padding:32px; width:100%; max-width:420px; box-shadow:0 8px 32px rgba(0,0,0,.4);">
+        <h2 style="margin:0 0 8px; font-size:1.1rem;">Connect Notion</h2>
+        <p style="margin:0 0 20px; font-size:.85rem; color:#888;">
+          Create an internal integration at
+          <a href="https://www.notion.so/my-integrations" target="_blank" style="color:#7c6af7;">notion.so/my-integrations</a>,
+          copy the token (starts with <code>ntn_</code>), then grant it access to your pages via the ••• menu → Connections.
+        </p>
+        <input id="notion-token-input" type="password" placeholder="ntn_xxxxxxxxxxxx"
+          style="width:100%; box-sizing:border-box; padding:10px 12px; border-radius:8px; border:1px solid #333; background:#12121a; color:#fff; font-size:.9rem; margin-bottom:16px;" />
+        <div style="display:flex; gap:10px; justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="document.getElementById('notion-modal').style.display='none'">Cancel</button>
+          <button class="btn btn-primary" onclick="connectNotion('{{ user.email }}')">Connect</button>
+        </div>
+        <div id="notion-error" style="margin-top:12px; color:#f87171; font-size:.85rem; display:none;"></div>
+      </div>
+    </div>
 
     <div id="pipeline-toast"></div>
 
     <script>
+      async function connectNotion(userEmail) {
+        const token = document.getElementById('notion-token-input').value.trim();
+        const errEl = document.getElementById('notion-error');
+        errEl.style.display = 'none';
+        if (!token) { errEl.textContent = 'Please enter a token.'; errEl.style.display = 'block'; return; }
+        try {
+          const res = await fetch('/ui/connect/notion/token', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ user_email: userEmail, token }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+          document.getElementById('notion-modal').style.display = 'none';
+          window.location.href = window.location.pathname + '?linked=notion';
+        } catch (err) {
+          errEl.textContent = `✗ ${err.message}`;
+          errEl.style.display = 'block';
+        }
+      }
+
       async function runPipeline(userEmail, forceFetch) {
         const runBtn = document.getElementById('run-btn');
         const forceBtn = document.getElementById('force-btn');
@@ -279,6 +600,172 @@
           forceBtn.textContent = '↺ Force Fetch';
           setTimeout(() => { toast.className = ''; }, 4000);
         }
+      }
+
+      async function detectStaleJira(userEmail) {
+        const toast = document.getElementById('pipeline-toast');
+        const btn = document.getElementById('stale-jira-btn');
+        btn.disabled = true;
+        toast.className = 'show loading';
+        toast.textContent = 'Checking Jira hygiene…';
+        try {
+          const res = await fetch(`/api/v1/communication/stale-jira/${encodeURIComponent(userEmail)}`, { method: 'POST' });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          toast.className = 'show success';
+          toast.textContent = `${data.proposals.length} Jira draft(s) ready for approval`;
+          setTimeout(() => window.location.reload(), 1200);
+        } catch (err) {
+          toast.className = 'show error';
+          toast.textContent = `✗ ${err.message}`;
+          btn.disabled = false;
+        }
+      }
+
+      async function approveProposal(proposalId, execute) {
+        const toast = document.getElementById('pipeline-toast');
+        toast.className = 'show loading';
+        toast.textContent = execute ? 'Approving and sending…' : 'Approving proposal…';
+        try {
+          const res = await fetch(`/api/v1/actions/${proposalId}/approve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ execute }),
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          toast.className = 'show success';
+          toast.textContent = `Proposal ${data.status}`;
+          setTimeout(() => window.location.reload(), 1200);
+        } catch (err) {
+          toast.className = 'show error';
+          toast.textContent = `✗ ${err.message}`;
+        }
+      }
+
+      function valueOf(id) {
+        return document.getElementById(id).value.trim();
+      }
+
+      function showConsoleResult(title, payload) {
+        const box = document.getElementById('console-result');
+        box.hidden = false;
+        box.innerHTML = `
+          <div class="console-result-head">
+            <strong>${escapeHtml(title)}</strong>
+            <button class="btn btn-ghost btn-small" onclick="document.getElementById('console-result').hidden = true">Close</button>
+          </div>
+          ${renderPayload(payload)}
+        `;
+      }
+
+      function renderPayload(payload) {
+        if (payload && payload.answer) {
+          const citations = (payload.citations || []).slice(0, 5).map((citation) => {
+            const title = citation.title || citation.external_id || citation.source || 'source';
+            return citation.url
+              ? `<li><a href="${escapeAttr(citation.url)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a></li>`
+              : `<li>${escapeHtml(title)}</li>`;
+          }).join('');
+          return `
+            <div class="answer-block">${escapeHtml(payload.answer).replace(/\n/g, '<br>')}</div>
+            ${citations ? `<div class="source-list"><div class="tiny">Sources</div><ul>${citations}</ul></div>` : ''}
+          `;
+        }
+        return `<pre>${escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+      }
+
+      async function postJson(url, body) {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        return res.json();
+      }
+
+      async function askWhereIs(userEmail) {
+        try {
+          const data = await postJson('/api/v1/communication/whereis', {
+            user_email: userEmail,
+            person: valueOf('whereis-person'),
+            task: valueOf('whereis-task'),
+          });
+          showConsoleResult('Where is result', data);
+        } catch (err) {
+          showConsoleResult('Where is failed', { error: err.message });
+        }
+      }
+
+      async function createFollowUp(userEmail) {
+        try {
+          const data = await postJson('/api/v1/communication/followups', {
+            user_email: userEmail,
+            person: valueOf('followup-person'),
+            task: valueOf('followup-task'),
+            question: valueOf('followup-question'),
+            requester: userEmail,
+          });
+          showConsoleResult('Follow-up drafted', data);
+        } catch (err) {
+          showConsoleResult('Follow-up failed', { error: err.message });
+        }
+      }
+
+      async function retrieveContext(userEmail) {
+        try {
+          const data = await postJson('/api/v1/communication/retrieve', {
+            user_email: userEmail,
+            person: valueOf('retrieve-person') || null,
+            jira_key: valueOf('retrieve-jira') || null,
+            commitment_status: valueOf('retrieve-status') || null,
+            limit: 10,
+          });
+          showConsoleResult('Retrieved context', data);
+        } catch (err) {
+          showConsoleResult('Retrieval failed', { error: err.message });
+        }
+      }
+
+      async function lookupMemory(userEmail) {
+        try {
+          const task = valueOf('memory-task');
+          const url = task
+            ? `/api/v1/communication/memory/${encodeURIComponent(userEmail)}?task=${encodeURIComponent(task)}`
+            : `/api/v1/communication/memory/${encodeURIComponent(userEmail)}`;
+          const res = await fetch(url);
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP ${res.status}`);
+          }
+          showConsoleResult('Task memory', await res.json());
+        } catch (err) {
+          showConsoleResult('Memory lookup failed', { error: err.message });
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+          '&': '&amp;',
+          '<': '&lt;',
+          '>': '&gt;',
+          '"': '&quot;',
+          "'": '&#39;',
+        }[ch]));
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value).replace(/`/g, '&#96;');
       }
     </script>
   </body>

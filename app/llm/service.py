@@ -9,7 +9,7 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
-from app.llm.prompts import CLASSIFICATION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
+from app.llm.prompts import CLASSIFICATION_SYSTEM_PROMPT, COMMITMENT_EXTRACTION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
 
 
 logger = logging.getLogger(__name__)
@@ -97,10 +97,43 @@ class LLMService:
             logger.exception("LLM summary failed, returning heuristic summary payload")
             return payload
 
+    def extract_commitments(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+        if not items:
+            return {"commitments": []}
+        logger.info("Extracting commitments from %d item(s)", len(items))
+        trimmed = [
+            {
+                "id": item.get("id") or item.get("external_id"),
+                "source": item.get("source"),
+                "title": item.get("title"),
+                "content": (item.get("content") or "")[:1200],
+                "people": item.get("people") or [],
+                "timestamp": item.get("timestamp"),
+                "metadata": item.get("metadata") or {},
+            }
+            for item in items
+        ]
+        try:
+            result = self._complete_json(
+                system_prompt=COMMITMENT_EXTRACTION_SYSTEM_PROMPT,
+                user_prompt=json.dumps({"items": trimmed}, default=str),
+                max_tokens=max(2048, len(trimmed) * 500),
+            )
+            if isinstance(result, dict) and isinstance(result.get("commitments"), list):
+                logger.info("Commitment extraction returned %d candidate(s)", len(result["commitments"]))
+                return result
+            logger.warning("Commitment extraction returned unexpected shape: %s", type(result).__name__)
+            return {"commitments": []}
+        except Exception:
+            logger.exception("LLM commitment extraction failed, falling back to heuristics")
+            return {"commitments": self._heuristic_commitments(trimmed)}
+
     def _complete_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 2048) -> dict[str, Any]:
         provider = self.settings.llm_provider.lower()
         if provider == "gemini":
             return self._gemini_json(system_prompt, user_prompt, max_tokens)
+        if provider == "openrouter":
+            return self._openrouter_json(system_prompt, user_prompt, max_tokens)
         if provider == "mock":
             return self._mock_json(system_prompt, user_prompt)
         raise ValueError(f"Unsupported LLM provider: {provider}")
@@ -121,7 +154,7 @@ class LLMService:
                 "maxOutputTokens": max_tokens,
             },
         }
-        print(body)
+        logger.info("Calling Gemini JSON completion model=%s max_tokens=%s prompt_chars=%s", model, max_tokens, len(user_prompt))
         with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
             response = client.post(
                 url,
@@ -139,7 +172,62 @@ class LLMService:
             .get("parts", [{}])[0]
             .get("text", "{}")
         )
-        # Strip markdown code fences Gemini occasionally wraps around JSON
+        return self._parse_json_text("Gemini", text, finish_reason)
+
+    @retry(wait=wait_exponential(multiplier=2, min=5, max=60), stop=stop_after_attempt(4), reraise=True)
+    def _openrouter_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 2048) -> dict[str, Any]:
+        api_key = self.settings.llm_api_key or self.settings.openrouter_api_key
+        if not api_key:
+            raise ValueError("OPENROUTER_API_KEY or LLM_API_KEY must be configured when llm_provider=openrouter")
+        model = self._openrouter_model()
+        url = f"{self.settings.openrouter_base_url.rstrip('/')}/chat/completions"
+        body = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.1,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        if self.settings.openrouter_site_url:
+            headers["HTTP-Referer"] = self.settings.openrouter_site_url
+        if self.settings.openrouter_app_name:
+            headers["X-Title"] = self.settings.openrouter_app_name
+        logger.info("Calling OpenRouter JSON completion model=%s max_tokens=%s prompt_chars=%s", model, max_tokens, len(user_prompt))
+        with httpx.Client(timeout=self.settings.llm_timeout_seconds) as client:
+            response = client.post(url, headers=headers, json=body)
+            response.raise_for_status()
+            payload = response.json()
+        choice = payload.get("choices", [{}])[0]
+        finish_reason = choice.get("finish_reason", "")
+        if finish_reason == "length":
+            raise ValueError(f"OpenRouter response truncated (length); increase max_tokens beyond {max_tokens}")
+        content = choice.get("message", {}).get("content", "{}")
+        return self._parse_json_text("OpenRouter", self._content_to_text(content), finish_reason)
+
+    def _openrouter_model(self) -> str:
+        if self.settings.llm_model and self.settings.llm_model != "gemini-2.5-flash":
+            return self.settings.llm_model
+        return "google/gemma-4-26b-a4b-it:free"
+
+    def _content_to_text(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    parts.append(part["text"])
+            return "\n".join(parts)
+        return "{}"
+
+    def _parse_json_text(self, provider_name: str, text: str, finish_reason: str = "") -> dict[str, Any]:
         stripped = text.strip()
         if stripped.startswith("```"):
             stripped = stripped.split("\n", 1)[-1]
@@ -147,7 +235,7 @@ class LLMService:
         try:
             return json.loads(stripped)
         except json.JSONDecodeError:
-            logger.error("Gemini returned invalid JSON (finish_reason=%s): %s", finish_reason, stripped[:500])
+            logger.error("%s returned invalid JSON (finish_reason=%s): %s", provider_name, finish_reason, stripped[:500])
             raise
 
     def _mock_json(self, _system_prompt: str, user_prompt: str) -> dict[str, Any]:
@@ -158,6 +246,8 @@ class LLMService:
         # Batch classification: payload is a list of items
         if isinstance(parsed, list):
             return {"classifications": [self._heuristic_classification(item) for item in parsed]}
+        if isinstance(parsed, dict) and "items" in parsed and "commitment" in _system_prompt.lower():
+            return {"commitments": self._heuristic_commitments(parsed.get("items") or [])}
         if "items" in parsed or "priority_actions" in parsed:
             return parsed
         return self._heuristic_classification(parsed)
@@ -208,3 +298,37 @@ class LLMService:
             "people": people,
             "short_summary": short_summary,
         }
+
+    def _heuristic_commitments(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        commitments: list[dict[str, Any]] = []
+        issue_re = re.compile(r"\b([A-Z][A-Z0-9]+-\d+)\b")
+        commitment_re = re.compile(
+            r"\b(i'?ll|i will|we will|will|can you|please|todo|follow up|eta|blocked|stuck|waiting on)\b",
+            re.IGNORECASE,
+        )
+        for item in items:
+            text = f"{item.get('title', '')}\n{item.get('content', '')}".strip()
+            if not commitment_re.search(text):
+                continue
+            people = item.get("people") or []
+            issue = issue_re.search(text)
+            status = "blocked" if re.search(r"\b(blocked|stuck|waiting on)\b", text, re.I) else "open"
+            commitments.append(
+                {
+                    "owner": people[0] if people else None,
+                    "requester": people[1] if len(people) > 1 else None,
+                    "task_title": item.get("title") or (issue.group(1) if issue else "Follow-up task"),
+                    "jira_key": issue.group(1) if issue else None,
+                    "project": None,
+                    "commitment_text": (item.get("content") or item.get("title") or "")[:500],
+                    "due_date": None,
+                    "status": status,
+                    "source_system": item.get("source"),
+                    "source_url": (item.get("metadata") or {}).get("source_url"),
+                    "source_message_id": item.get("id"),
+                    "needs_follow_up": bool(re.search(r"\b(follow up|eta|blocked|stuck|waiting on)\b", text, re.I)),
+                    "jira_appears_stale": bool(issue and re.search(r"\b(stale|not updated|jira)\b", text, re.I)),
+                    "confidence": 0.7,
+                }
+            )
+        return commitments

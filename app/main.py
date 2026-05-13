@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import inspect, text
 from starlette.middleware.sessions import SessionMiddleware
 
+import app.models  # noqa: F401 - register SQLAlchemy models before create_all
 from app.api.routes import router
 from app.config import get_settings
 from app.db import Base, engine

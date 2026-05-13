@@ -35,14 +35,19 @@ if [ ! -f ".env" ]; then
 fi
 
 # ── infrastructure ──────────────────────────────────────
-log "Starting PostgreSQL and Redis…"
+log "Starting Redis…"
 docker compose up -d
 
-log "Waiting for PostgreSQL…"
-until docker compose exec -T postgres pg_isready -U postgres -q 2>/dev/null; do
-  sleep 1
-done
-ok "PostgreSQL is ready."
+DATABASE_URL_VALUE="$(grep -E '^DATABASE_URL=' .env 2>/dev/null | tail -1 | cut -d= -f2- || true)"
+if [[ "$DATABASE_URL_VALUE" == postgresql* ]]; then
+  log "Waiting for PostgreSQL…"
+  until pg_isready -h 127.0.0.1 -U postgres -q 2>/dev/null; do
+    sleep 1
+  done
+  ok "PostgreSQL is ready."
+else
+  ok "Using SQLite database."
+fi
 
 log "Waiting for Redis…"
 until docker compose exec -T redis redis-cli ping 2>/dev/null | grep -q PONG; do
@@ -66,6 +71,8 @@ cleanup() {
 trap cleanup INT TERM
 
 # ── start processes ─────────────────────────────────────
+mkdir -p logs
+
 log "Starting Celery worker…"
 .venv/bin/celery \
   -A app.workers.celery_app.celery_app worker \
@@ -79,8 +86,6 @@ log "Starting Celery beat scheduler…"
   --loglevel=info \
   --logfile=logs/celery-beat.log &
 PIDS+=($!)
-
-mkdir -p logs
 
 log "Starting API server…"
 echo ""

@@ -30,6 +30,11 @@ class DeduplicationService:
                 {"source": item.source, "external_id": item.external_id, "account_id": item.account_id}
                 for item in bucket
             ]
+            people_identities = [
+                identity
+                for item in bucket
+                for identity in (item.metadata_json or {}).get("people_identities", [])
+            ]
             merged.append(
                 {
                     "dedupe_key": dedupe_key,
@@ -51,6 +56,7 @@ class DeduplicationService:
                             )
                         ),
                         "sources": source_refs,
+                        "people_identities": people_identities,
                     },
                     "timestamp": max(item.timestamp for item in bucket),
                     "items": bucket,

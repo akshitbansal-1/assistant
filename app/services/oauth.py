@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -12,6 +13,9 @@ from urllib.parse import urlencode
 from cryptography.fernet import Fernet
 
 from app.config import get_settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class TokenCipher:
@@ -95,6 +99,7 @@ class OAuthService:
             "grant_type": "refresh_token",
         }
         with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
+            logger.info("Refreshing OAuth token provider=%s token_url=%s", provider, config["token_url"])
             response = client.post(config["token_url"], data=data)
             response.raise_for_status()
             payload = response.json()
@@ -157,21 +162,63 @@ class OAuthService:
         if provider == "slack":
             team = token_payload.get("team") or {}
             authed_user = token_payload.get("authed_user") or {}
+            enterprise = token_payload.get("enterprise") or {}
             return {
                 "account_identifier": team.get("id") or authed_user.get("id") or "slack",
                 "label": team.get("name") or "Slack workspace",
+                "extra_metadata": {
+                    "team_id": team.get("id"),
+                    "team_name": team.get("name"),
+                    "enterprise_id": enterprise.get("id"),
+                    "authed_user_id": authed_user.get("id"),
+                    "bot_user_id": token_payload.get("bot_user_id"),
+                    "user_id": authed_user.get("id"),
+                },
             }
         if provider == "notion":
             workspace_name = token_payload.get("workspace_name") or "Notion workspace"
             workspace_id = token_payload.get("workspace_id") or token_payload.get("workspace_icon") or "notion"
+            access_token = token_payload.get("access_token")
+            database_ids: list[str] = []
+            if access_token:
+                with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
+                    response = client.post(
+                        "https://api.notion.com/v1/search",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Notion-Version": "2022-06-28",
+                        },
+                        json={"filter": {"property": "object", "value": "database"}, "page_size": 100},
+                    )
+                    if response.is_success:
+                        database_ids = [r["id"] for r in response.json().get("results", [])]
             return {
                 "account_identifier": workspace_id,
                 "label": workspace_name,
+                "extra_metadata": {"database_ids": database_ids},
             }
         if provider == "jira":
+            access_token = token_payload.get("access_token")
+            with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
+                response = client.get(
+                    "https://api.atlassian.com/oauth/token/accessible-resources",
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                )
+                response.raise_for_status()
+                resources = response.json()
+            if not resources:
+                raise ValueError("No accessible Jira resources found for this account")
+            resource = resources[0]
+            cloud_id = resource["id"]
+            site_url = resource.get("url")
             return {
-                "account_identifier": token_payload.get("cloud_id", "jira"),
-                "label": "Jira workspace",
+                "account_identifier": cloud_id,
+                "label": resource.get("name", "Jira workspace"),
+                "extra_metadata": {
+                    "cloud_id": cloud_id,
+                    "site_url": site_url,
+                    "base_url": f"https://api.atlassian.com/ex/jira/{cloud_id}",
+                },
             }
         raise ValueError(f"Unsupported provider: {provider}")
 
@@ -197,14 +244,16 @@ class OAuthService:
                 "client_secret": self.settings.slack_client_secret,
                 "redirect_uri": self.settings.slack_redirect_uri,
                 "scopes": [
-                    "channels:history",
-                    "groups:history",
-                    "im:history",
-                    "mpim:history",
-                    "users:read",
                     "chat:write",
+                    "commands",
+                    "im:read",
+                    "im:write",
+                    "users:read",
+                    "users:read.email",
                 ],
-                "authorize_params": {},
+                "authorize_params": {
+                    "user_scope": "channels:history,groups:history,im:history,mpim:history,channels:read,groups:read,users:read,users:read.email",
+                },
             },
             "notion": {
                 "authorize_url": "https://api.notion.com/v1/oauth/authorize",
@@ -221,7 +270,7 @@ class OAuthService:
                 "client_id": self.settings.jira_client_id,
                 "client_secret": self.settings.jira_client_secret,
                 "redirect_uri": self.settings.jira_redirect_uri,
-                "scopes": ["read:jira-work", "read:jira-user", "offline_access"],
+                "scopes": ["read:jira-work", "read:jira-user", "write:jira-work", "offline_access"],
                 "authorize_params": {"audience": "api.atlassian.com", "prompt": "consent"},
             },
             "google_login": {

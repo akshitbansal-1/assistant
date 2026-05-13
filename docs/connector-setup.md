@@ -48,15 +48,24 @@ SLACK_REDIRECT_URI=http://localhost:3000/api/v1/oauth/slack/callback
 2. Name the app and pick your development workspace.
 3. **OAuth & Permissions → Redirect URLs** → add `http://localhost:3000/api/v1/oauth/slack/callback` → **Save URLs**.
 4. **OAuth & Permissions → Bot Token Scopes** → add:
+   - `chat:write`
+   - `commands`
+   - `im:read`
+   - `im:write`
+   - `users:read`
+   - `users:read.email`
+5. **OAuth & Permissions → User Token Scopes** → add:
    - `channels:history`
+   - `channels:read`
    - `groups:history`
+   - `groups:read`
    - `im:history`
    - `mpim:history`
    - `users:read`
-   - `chat:write`
-5. **Basic Information** → copy **Client ID** and **Client Secret** into `.env`.
+   - `users:read.email`
+6. **Basic Information** → copy **Client ID** and **Client Secret** into `.env`.
 
-**Scopes used:** `channels:history`, `groups:history`, `im:history`, `mpim:history`, `users:read`, `chat:write`
+**Scopes used:** bot scopes `chat:write`, `commands`, `im:read`, `im:write`, `users:read`, `users:read.email`; user scopes `channels:history`, `groups:history`, `im:history`, `mpim:history`, `channels:read`, `groups:read`, `users:read`, `users:read.email`.
 
 ---
 
@@ -95,10 +104,10 @@ JIRA_REDIRECT_URI=http://localhost:3000/api/v1/oauth/jira/callback
 1. Go to [Atlassian Developer Console](https://developer.atlassian.com/console/myapps/) → **Create** → **OAuth 2.0 integration**.
 2. Name the app.
 3. **Authorization** tab → add callback URL: `http://localhost:3000/api/v1/oauth/jira/callback`.
-4. **Permissions** tab → **Jira API** → enable `read:jira-work` and `read:jira-user`.
+4. **Permissions** tab → **Jira API** → enable `read:jira-work`, `read:jira-user`, and `write:jira-work`.
 5. **Settings** tab → copy **Client ID** and **Secret** into `.env`.
 
-**Scopes used:** `read:jira-work`, `read:jira-user`, `offline_access`
+**Scopes used:** `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access`
 
 ---
 

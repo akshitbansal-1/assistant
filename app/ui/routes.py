@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
 from app.models.account import LinkedAccount, User
+from app.models.communication import ActionProposal, AuditLog, Commitment, CommunicationTask, FollowUp, TaskStatusSnapshot
 from app.models.item import WorkItem
 from app.models.memory import KnownEntity, TrackedTask
 from app.models.summary import DailySummary
@@ -28,6 +31,68 @@ def _pretty_json(value: object) -> str:
 
 
 templates.env.filters["prettyjson"] = _pretty_json
+
+
+def _account_health(account: LinkedAccount) -> dict[str, object]:
+    metadata = account.metadata_json or {}
+    now = datetime.now(timezone.utc)
+    status = "ok"
+    reasons: list[str] = []
+    details: list[str] = []
+
+    if not account.is_active:
+        status = "error"
+        reasons.append("Account is inactive")
+
+    sample_mode = bool(metadata.get("sample_mode"))
+    if sample_mode:
+        details.append("sample data")
+    elif not account.access_token:
+        status = "error"
+        reasons.append("Missing access token")
+
+    expires_at = account.expires_at
+    if expires_at is not None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc) if expires_at.tzinfo is None else expires_at.astimezone(timezone.utc)
+        if expires_at <= now:
+            status = "error"
+            reasons.append("Token expired")
+        elif expires_at <= now + timedelta(days=7):
+            status = "warning" if status == "ok" else status
+            reasons.append("Token expires soon")
+
+    if account.source == "slack":
+        missing = [key for key in ("team_id", "user_id") if not metadata.get(key)]
+        if missing and not sample_mode:
+            status = "warning" if status == "ok" else status
+            reasons.append(f"Missing Slack metadata: {', '.join(missing)}")
+        if metadata.get("team_name"):
+            details.append(str(metadata["team_name"]))
+    elif account.source == "jira":
+        missing = [key for key in ("cloud_id", "base_url") if not metadata.get(key)]
+        if missing and not sample_mode:
+            status = "warning" if status == "ok" else status
+            reasons.append(f"Missing Jira metadata: {', '.join(missing)}")
+        if metadata.get("site_url"):
+            details.append(str(metadata["site_url"]))
+    elif account.source == "notion":
+        database_ids = metadata.get("database_ids")
+        if database_ids:
+            details.append(f"{len(database_ids)} database(s)")
+
+    if not account.last_fetched_at:
+        status = "warning" if status == "ok" else status
+        reasons.append("Never fetched")
+
+    return {
+        "source": account.source,
+        "label": account.label,
+        "identifier": account.account_identifier,
+        "status": status,
+        "summary": "Ready" if status == "ok" else "; ".join(reasons),
+        "details": ", ".join(details) if details else None,
+        "last_fetched_at": account.last_fetched_at,
+    }
 
 
 def require_current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -93,6 +158,50 @@ def ui_connect_account(
     return RedirectResponse(url=authorization_url, status_code=302)
 
 
+class NotionTokenPayload(BaseModel):
+    user_email: str
+    token: str
+
+
+@router.post("/ui/connect/notion/token", include_in_schema=False)
+def ui_connect_notion_token(
+    payload: NotionTokenPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user),
+) -> JSONResponse:
+    import httpx
+
+    token = payload.token.strip()
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.get(
+                "https://api.notion.com/v1/users/me",
+                headers={"Authorization": f"Bearer {token}", "Notion-Version": "2022-06-28"},
+            )
+            resp.raise_for_status()
+            me = resp.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid token — could not authenticate with Notion")
+
+    name = me.get("name") or "Notion workspace"
+    notion_id = me.get("id") or "notion"
+
+    from app.schemas.account import AccountCreate
+    svc = AccountService()
+    account = svc.upsert_linked_account(
+        db,
+        AccountCreate(
+            user_email=current_user.email,
+            source="notion",
+            label=name,
+            account_identifier=notion_id,
+            access_token=token,
+        ),
+    )
+    db.commit()
+    return JSONResponse({"id": str(account.id), "label": account.label})
+
+
 @router.get("/ui/dashboard", include_in_schema=False)
 def ui_dashboard(
     request: Request,
@@ -135,13 +244,49 @@ def ui_dashboard(
         .limit(100)
         .all()
     )
+    comm_tasks = db.query(CommunicationTask).filter(CommunicationTask.user_id == user.id).order_by(CommunicationTask.updated_at.desc()).limit(50).all()
+    pending_followups = db.query(FollowUp).filter(FollowUp.user_id == user.id, FollowUp.status.in_(["pending", "sent"])).order_by(FollowUp.created_at.desc()).limit(50).all()
+    overdue_commitments = (
+        db.query(Commitment)
+        .filter(
+            Commitment.user_id == user.id,
+            Commitment.status.in_(["open", "blocked", "stale"]),
+            Commitment.due_date.isnot(None),
+            Commitment.due_date <= date.today(),
+        )
+        .order_by(Commitment.due_date.asc())
+        .limit(50)
+        .all()
+    )
+    action_proposals = (
+        db.query(ActionProposal)
+        .filter(ActionProposal.user_id == user.id, ActionProposal.status == "pending_approval")
+        .order_by(ActionProposal.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    stale_jira = [proposal for proposal in action_proposals if proposal.target_system == "jira"]
+    snapshots = (
+        db.query(TaskStatusSnapshot)
+        .join(CommunicationTask, CommunicationTask.id == TaskStatusSnapshot.task_id)
+        .filter(CommunicationTask.user_id == user.id)
+        .order_by(TaskStatusSnapshot.created_at.desc())
+        .limit(50)
+        .all()
+    )
+    audit_logs = db.query(AuditLog).filter(AuditLog.user_id == user.id).order_by(AuditLog.created_at.desc()).limit(50).all()
+    connector_health = [_account_health(account) for account in accounts]
 
     metrics = {
         "linked_accounts": len(accounts),
+        "connector_warnings": sum(1 for item in connector_health if item["status"] != "ok"),
         "summaries": len(summaries),
         "stored_items": db.query(WorkItem).filter(WorkItem.user_id == user.id).count(),
         "tracked_tasks": len(tracked_tasks),
         "known_entities": len(entities),
+        "task_memory": len(comm_tasks),
+        "pending_followups": len(pending_followups),
+        "action_proposals": len(action_proposals),
     }
 
     return templates.TemplateResponse(
@@ -151,10 +296,18 @@ def ui_dashboard(
             "user": user,
             "metrics": metrics,
             "accounts": accounts,
+            "connector_health": connector_health,
             "summaries": summaries,
             "items": items,
             "tracked_tasks": tracked_tasks,
             "entities": entities,
+            "comm_tasks": comm_tasks,
+            "pending_followups": pending_followups,
+            "overdue_commitments": overdue_commitments,
+            "stale_jira": stale_jira,
+            "action_proposals": action_proposals,
+            "snapshots": snapshots,
+            "audit_logs": audit_logs,
             "linked_provider": request.query_params.get("linked"),
             "enable_auth": settings.enable_auth,
         },

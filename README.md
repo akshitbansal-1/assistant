@@ -18,7 +18,7 @@ Production-minded MVP for aggregating Gmail, Slack, Notion, and Jira activity in
 - Backend: FastAPI
 - Database: PostgreSQL in production, SQLite-friendly for local tests
 - Queue/Scheduler: Redis + Celery + Celery Beat
-- LLM: Gemini via API key, with a mock fallback for local testing
+- LLM: Gemini or OpenRouter via API key, with a mock fallback for local testing
 
 ## Repo Layout
 
@@ -37,6 +37,11 @@ tests/
 ```
 
 ## Architecture
+
+Detailed design docs:
+
+- [High-level design](docs/architecture-hld.md)
+- [Low-level design](docs/architecture-lld.md)
 
 ### Flow
 
@@ -95,6 +100,12 @@ Minimum useful settings:
 - `LLM_PROVIDER=gemini`
 - `LLM_MODEL=gemini-2.5-flash`
 - `GEMINI_API_KEY=...`
+
+To run the intelligence layer through OpenRouter instead:
+
+- `LLM_PROVIDER=openrouter`
+- `LLM_MODEL=google/gemma-4-26b-a4b-it:free`
+- `OPENROUTER_API_KEY=...`
 
 If you want to run without real provider tokens first, leave:
 
