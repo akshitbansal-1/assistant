@@ -113,6 +113,8 @@ h1, h2, h3, h4, p, dl, dd { margin: 0; }
   padding: 36px 0 80px;
 }
 
+.shell.narrow { width: min(520px, calc(100vw - 48px)); }
+
 /* ── page header ─────────────────────────────────────── */
 .back-link {
   display: inline-flex;
@@ -137,6 +139,15 @@ h1, h2, h3, h4, p, dl, dd { margin: 0; }
 .page-subtitle {
   color: var(--text-2);
   font-size: 0.95rem;
+}
+
+.page-kicker {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
 }
 
 /* ── hero (index) ────────────────────────────────────── */

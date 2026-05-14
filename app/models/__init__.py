@@ -1,4 +1,4 @@
-from app.models.account import LinkedAccount, User
+from app.models.account import LinkedAccount, User, UserInvitation
 from app.models.communication import (
     ActionProposal,
     AuditLog,
@@ -11,6 +11,7 @@ from app.models.communication import (
     Organization,
     OrganizationMember,
     Person,
+    SearchDocument,
     TaskSource,
     TaskStatusSnapshot,
 )
@@ -33,9 +34,11 @@ __all__ = [
     "Organization",
     "OrganizationMember",
     "Person",
+    "SearchDocument",
     "TaskSource",
     "TaskStatusSnapshot",
     "TrackedTask",
     "User",
+    "UserInvitation",
     "WorkItem",
 ]

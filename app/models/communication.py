@@ -42,11 +42,13 @@ class Person(Base):
     __table_args__ = (
         UniqueConstraint("organization_id", "display_name", name="uq_person_org_display_name"),
         Index("ix_people_org_email", "organization_id", "email"),
+        Index("ix_people_org_manager", "organization_id", "manager_person_id"),
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    manager_person_id: Mapped[str] = mapped_column(ForeignKey("people.id"), nullable=True, index=True)
     display_name: Mapped[str] = mapped_column(String(255))
     email: Mapped[str] = mapped_column(String(255), nullable=True)
     aliases_json: Mapped[list] = mapped_column(json_type(), default=list)
@@ -238,6 +240,10 @@ class ActionProposal(Base):
     requested_by_person_id: Mapped[str] = mapped_column(ForeignKey("people.id"), nullable=True, index=True)
     approved_by_person_id: Mapped[str] = mapped_column(ForeignKey("people.id"), nullable=True, index=True)
     approved_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    rejected_by_person_id: Mapped[str] = mapped_column(ForeignKey("people.id"), nullable=True, index=True)
+    rejected_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+    rejection_reason: Mapped[str] = mapped_column(Text, nullable=True)
+    original_payload_json: Mapped[dict] = mapped_column(json_type(), default=dict)
     executed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     external_url: Mapped[str] = mapped_column(Text, nullable=True)
     error: Mapped[str] = mapped_column(Text, nullable=True)
@@ -260,3 +266,25 @@ class AuditLog(Base):
     after_json: Mapped[dict] = mapped_column(json_type(), default=dict)
     metadata_json: Mapped[dict] = mapped_column(json_type(), default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SearchDocument(Base):
+    __tablename__ = "search_documents"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "entity_type", "entity_id", name="uq_search_document_entity"),
+        Index("ix_search_documents_org_entity", "organization_id", "entity_type"),
+        Index("ix_search_documents_org_source", "organization_id", "source_system"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    entity_type: Mapped[str] = mapped_column(String(80), index=True)
+    entity_id: Mapped[str] = mapped_column(String, index=True)
+    source_system: Mapped[str] = mapped_column(String(50), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(500))
+    body: Mapped[str] = mapped_column(Text, default="")
+    term_index_json: Mapped[dict] = mapped_column(json_type(), default=dict)
+    metadata_json: Mapped[dict] = mapped_column(json_type(), default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)

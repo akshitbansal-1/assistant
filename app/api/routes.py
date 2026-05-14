@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import re
 import time
 from datetime import datetime
 from typing import Any
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
@@ -16,12 +18,14 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.db import get_db
 from app.models.account import User
-from app.models.communication import ActionProposal, AuditLog, CommunicationTask, FollowUp
+from app.models.communication import ActionProposal, AuditLog, CommunicationTask, FollowUp, Person
 from app.models.summary import DailySummary
 from app.schemas.account import AccountCreate, AccountRead, OAuthCallbackRequest, OAuthStartResponse, UserRead
+from app.schemas.actions import ActionApprovalRequest, ActionCancelRequest, ActionEditRequest, ActionRejectRequest
 from app.schemas.pipeline import PipelineRunRequest, PipelineRunResponse, SummaryView
 from app.services.actions import ActionProposalService
 from app.services.account import AccountService
+from app.services.authorization import AuthorizationService
 from app.services.communication import CommunicationLoopService
 from app.services.jira_hygiene import JiraHygieneService
 from app.services.oauth import OAuthService
@@ -38,6 +42,7 @@ class WhereIsRequest(BaseModel):
     user_email: str
     person: str
     task: str
+    requester: str | None = None
 
 
 class FollowUpRequest(BaseModel):
@@ -53,11 +58,6 @@ class FollowUpReplyRequest(BaseModel):
     text: str
     channel_id: str | None = None
     message_ts: str | None = None
-
-
-class ActionApprovalRequest(BaseModel):
-    approved_by_person_id: str | None = None
-    execute: bool = False
 
 
 class RetrievalRequest(BaseModel):
@@ -109,6 +109,12 @@ async def _verify_slack_request(request: Request) -> bytes:
     if not hmac.compare_digest(expected, signature):
         raise HTTPException(status_code=401, detail="Invalid Slack signature")
     return body
+
+
+async def _urlencoded_form(request: Request) -> dict[str, str]:
+    body = await request.body()
+    parsed = parse_qs(body.decode(), keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
 
 
 @router.get("/users/default", response_model=UserRead)
@@ -252,7 +258,17 @@ def run_pipeline(payload: PipelineRunRequest, db: Session = Depends(get_db)) -> 
 def whereis(payload: WhereIsRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
     user = _user_or_404(db, payload.user_email)
     logger.info("API whereis requested user=%s person=%s task=%s", payload.user_email, payload.person, payload.task)
-    result = CommunicationLoopService().answer_whereis(db, user, payload.person, payload.task)
+    try:
+        result = CommunicationLoopService().answer_whereis(
+            db,
+            user,
+            payload.person,
+            payload.task,
+            requester=payload.requester,
+            enforce_authorization=bool(payload.requester),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     db.commit()
     logger.info("API whereis completed user=%s confidence=%.2f citations=%d", payload.user_email, result.get("confidence", 0), len(result.get("citations", [])))
     return result
@@ -396,6 +412,52 @@ def approve_action(proposal_id: str, payload: ActionApprovalRequest, db: Session
     return {"proposal_id": proposal.id, "status": proposal.status, "executed_at": proposal.executed_at}
 
 
+@router.post("/actions/{proposal_id}/reject")
+def reject_action(proposal_id: str, payload: ActionRejectRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        logger.info("API action rejection requested proposal=%s", proposal_id)
+        proposal = ActionProposalService().reject(
+            db,
+            proposal_id,
+            rejected_by_person_id=payload.rejected_by_person_id,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return {"proposal_id": proposal.id, "status": proposal.status, "rejection_reason": proposal.rejection_reason}
+
+
+@router.post("/actions/{proposal_id}/cancel")
+def cancel_action(proposal_id: str, payload: ActionCancelRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        proposal = ActionProposalService().cancel(
+            db,
+            proposal_id,
+            actor_person_id=payload.actor_person_id,
+            reason=payload.reason,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return {"proposal_id": proposal.id, "status": proposal.status}
+
+
+@router.post("/actions/{proposal_id}/edit")
+def edit_action(proposal_id: str, payload: ActionEditRequest, db: Session = Depends(get_db)) -> dict[str, Any]:
+    try:
+        proposal = ActionProposalService().edit(
+            db,
+            proposal_id,
+            payload=payload.payload,
+            actor_person_id=payload.actor_person_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return {"proposal_id": proposal.id, "status": proposal.status, "payload": proposal.payload_json}
+
+
 @router.post("/actions/{proposal_id}/execute")
 def execute_action(proposal_id: str, db: Session = Depends(get_db)) -> dict[str, Any]:
     try:
@@ -462,7 +524,7 @@ def detect_stale_jira(user_email: str, db: Session = Depends(get_db)) -> dict[st
 @router.post("/slack/commands", include_in_schema=False)
 async def slack_commands(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
     await _verify_slack_request(request)
-    form = await request.form()
+    form = await _urlencoded_form(request)
     command = str(form.get("command") or "").strip()
     text = str(form.get("text") or "").strip()
     requester = str(form.get("user_id") or "").strip() or None
@@ -472,7 +534,7 @@ async def slack_commands(request: Request, db: Session = Depends(get_db)) -> dic
     try:
         if command == "/whereis":
             person, task = _parse_person_task(text)
-            result = loop.answer_whereis(db, user, person, task)
+            result = loop.answer_whereis(db, user, person, task, requester=requester, enforce_authorization=True)
             db.commit()
             return {"response_type": "ephemeral", "text": _format_whereis_slack(result)}
         if command == "/followup":
@@ -483,7 +545,19 @@ async def slack_commands(request: Request, db: Session = Depends(get_db)) -> dic
             return {
                 "response_type": "ephemeral",
                 "text": f"Follow-up drafted and waiting for approval. Proposal: {proposal.id}",
+                "blocks": ActionProposalService().slack_blocks(proposal),
             }
+        if command == "/approve":
+            proposal_id = text.split(maxsplit=1)[0] if text else ""
+            if not proposal_id:
+                raise ValueError("Usage: /approve proposal_id")
+            org = loop.get_or_create_organization_for_user(db, user)
+            approver = _slack_person_for_user(db, loop, user, org.id, requester)
+            if not AuthorizationService().can_approve_actions(db, org.id, approver):
+                raise PermissionError("Only managers or admins can approve proposals")
+            proposal = ActionProposalService().approve(db, proposal_id, approved_by_person_id=approver.id if approver else None, execute=True)
+            db.commit()
+            return {"response_type": "ephemeral", "text": f"Proposal {proposal.status}: {proposal.id}"}
         if command == "/pending":
             org = loop.get_or_create_organization_for_user(db, user)
             count = db.query(FollowUp).filter(FollowUp.organization_id == org.id, FollowUp.status.in_(["pending", "sent"])).count()
@@ -499,6 +573,9 @@ async def slack_commands(request: Request, db: Session = Depends(get_db)) -> dic
             return {"response_type": "ephemeral", "text": f"{len(proposals)} Jira update draft(s) waiting for approval."}
     except ValueError as exc:
         logger.warning("Slack command failed command=%s error=%s", command, exc)
+        return {"response_type": "ephemeral", "text": str(exc)}
+    except PermissionError as exc:
+        logger.warning("Slack command denied command=%s requester=%s error=%s", command, requester, exc)
         return {"response_type": "ephemeral", "text": str(exc)}
     logger.warning("Slack command unsupported command=%s", command)
     return {"response_type": "ephemeral", "text": f"Unsupported command: {command}"}
@@ -560,6 +637,42 @@ async def slack_events(request: Request, db: Session = Depends(get_db)) -> dict[
     return {"ok": True}
 
 
+@router.post("/slack/interactions", include_in_schema=False)
+async def slack_interactions(request: Request, db: Session = Depends(get_db)) -> dict[str, Any]:
+    await _verify_slack_request(request)
+    form = await _urlencoded_form(request)
+    try:
+        payload = json.loads(str(form.get("payload") or "{}"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Slack payload") from exc
+    if payload.get("type") != "block_actions":
+        return {"response_type": "ephemeral", "text": "Unsupported Slack interaction"}
+    action = (payload.get("actions") or [{}])[0]
+    action_id = action.get("action_id")
+    proposal_id = action.get("value")
+    slack_user_id = (payload.get("user") or {}).get("id")
+    user = _default_user(db)
+    loop = CommunicationLoopService()
+    org = loop.get_or_create_organization_for_user(db, user)
+    approver = _slack_person_for_user(db, loop, user, org.id, slack_user_id)
+    if not AuthorizationService().can_approve_actions(db, org.id, approver):
+        return {"response_type": "ephemeral", "text": "Only managers or admins can approve or reject proposals."}
+    if action_id == "approve_proposal":
+        proposal = ActionProposalService().approve(db, proposal_id, approved_by_person_id=approver.id if approver else None, execute=True)
+        db.commit()
+        return {"response_type": "ephemeral", "replace_original": False, "text": f"Approved and executed proposal {proposal.id}."}
+    if action_id == "reject_proposal":
+        proposal = ActionProposalService().reject(
+            db,
+            proposal_id,
+            rejected_by_person_id=approver.id if approver else None,
+            reason="Rejected from Slack",
+        )
+        db.commit()
+        return {"response_type": "ephemeral", "replace_original": False, "text": f"Rejected proposal {proposal.id}."}
+    return {"response_type": "ephemeral", "text": "Unsupported proposal action."}
+
+
 def _parse_person_task(text: str) -> tuple[str, str]:
     parts = text.split(maxsplit=1)
     if len(parts) < 2:
@@ -588,6 +701,18 @@ def _format_whereis_slack(result: dict[str, Any]) -> str:
             links.append(f"<{url}|{title}>" if url else str(title))
         citation_text = "\nSources: " + ", ".join(links)
     return f"{result.get('answer', 'No answer available.')}{citation_text}"
+
+
+def _slack_person_for_user(db: Session, loop: CommunicationLoopService, user: User, organization_id: str, slack_user_id: str | None) -> Person | None:
+    if not slack_user_id:
+        return None
+    return loop.resolve_slack_person(db, user, organization_id, f"<@{slack_user_id}>") or loop.get_or_create_person(
+        db,
+        organization_id,
+        slack_user_id,
+        source_system="slack",
+        source_id=slack_user_id,
+    )
 
 
 def _slack_event_dedupe_key(payload: dict[str, Any], event: dict[str, Any]) -> str | None:

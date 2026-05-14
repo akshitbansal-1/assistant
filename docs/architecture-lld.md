@@ -49,7 +49,10 @@ Service layer owns business behavior.
 - `commitments.py`: LLM extraction validation and storage handoff.
 - `communication.py`: org/person/task/follow-up memory workflows.
 - `retrieval.py`: structured retrieval and citation assembly.
+- `search.py`: cheap lexical fallback index after structured retrieval misses.
 - `actions.py`: proposal creation, approval, Slack DM execution, Jira comment execution.
+- `authorization.py`: hierarchy and approval permission checks.
+- `admin.py`: invitations, onboarding, member listing, reporting-line setup.
 - `jira_hygiene.py`: stale Jira detection and draft proposal creation.
 - `summary.py`: daily summary payload and rendering.
 - `notification.py`: delivery path.
@@ -70,6 +73,7 @@ Provider behavior:
 ### Identity And Accounts
 
 - `User`: product user.
+- `UserInvitation`: invite token, desired role, manager, status, and acceptance time.
 - `LinkedAccount`: provider account, tokens, metadata, active flag, fetch timestamps.
 
 Provider metadata expectations:
@@ -87,17 +91,18 @@ Provider metadata expectations:
 ### Communication Memory
 
 - `Organization`, `OrganizationMember`
-- `Person`
+- `Person`: human identity plus optional `manager_person_id` for hierarchy checks.
 - `CommunicationTask`
 - `TaskSource`
 - `Commitment`, `CommitmentParticipant`
 - `FollowUp`, `FollowUpMessage`
 - `TaskStatusSnapshot`
 - `MemoryEvent`
+- `SearchDocument`: lexical fallback index for task/work-item lookup. Embeddings remain a later fallback, not the first search store.
 
 ### Approval And Audit
 
-- `ActionProposal`: pending/approved/executed/failed proposal.
+- `ActionProposal`: pending/approved/executed/failed proposal, original draft payload, and rejection metadata.
 - `AuditLog`: proposal, Slack event dedupe, and execution audit trail.
 
 ## Main Flows
@@ -250,14 +255,22 @@ Core API routes:
 - `POST /api/v1/communication/followups/{follow_up_id}/draft-jira`
 - `POST /api/v1/communication/stale-jira/{user_email}`
 - `POST /api/v1/actions/{proposal_id}/approve`
+- `POST /api/v1/actions/{proposal_id}/reject`
+- `POST /api/v1/actions/{proposal_id}/cancel`
+- `POST /api/v1/actions/{proposal_id}/edit`
 - `POST /api/v1/actions/{proposal_id}/execute`
 - `POST /api/v1/slack/commands`
 - `POST /api/v1/slack/events`
+- `POST /api/v1/slack/interactions`
 
 UI routes:
 
 - `GET /ui`
 - `GET /ui/dashboard`
+- `GET /ui/admin`
+- `POST /ui/admin/invites`
+- `GET|POST /onboard/{token}`
+- `GET /ui/actions/{proposal_id}`
 - `GET /ui/connect/{provider}`
 - `POST /ui/connect/notion/token`
 

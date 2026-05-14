@@ -41,6 +41,7 @@ class ActionProposalService:
             title=title,
             reason=reason,
             payload_json=payload,
+            original_payload_json=payload,
             source_citations_json=citations or [],
             requested_by_person_id=requested_by_person_id,
         )
@@ -83,10 +84,90 @@ class ActionProposalService:
             self.execute(db, proposal.id)
         return proposal
 
+    def reject(
+        self,
+        db: Session,
+        proposal_id: str,
+        *,
+        rejected_by_person_id: str | None = None,
+        reason: str,
+    ) -> ActionProposal:
+        proposal = self._proposal_or_error(db, proposal_id)
+        if proposal.status not in {"pending_approval", "approved"}:
+            raise ValueError(f"Cannot reject proposal in status {proposal.status}")
+        before = {"status": proposal.status, "payload": proposal.payload_json}
+        proposal.status = "rejected"
+        proposal.rejected_by_person_id = rejected_by_person_id
+        proposal.rejected_at = utcnow()
+        proposal.rejection_reason = reason
+        db.flush()
+        self._audit(
+            db,
+            proposal,
+            "action_proposal.rejected",
+            actor_person_id=rejected_by_person_id,
+            before=before,
+            after={"status": proposal.status, "reason": reason},
+        )
+        logger.info("Rejected action proposal proposal=%s reason_chars=%d", proposal.id, len(reason or ""))
+        return proposal
+
+    def cancel(
+        self,
+        db: Session,
+        proposal_id: str,
+        *,
+        actor_person_id: str | None = None,
+        reason: str,
+    ) -> ActionProposal:
+        proposal = self._proposal_or_error(db, proposal_id)
+        if proposal.status in {"executed", "failed"}:
+            raise ValueError(f"Cannot cancel proposal in status {proposal.status}")
+        before = {"status": proposal.status}
+        proposal.status = "canceled"
+        proposal.rejection_reason = reason
+        db.flush()
+        self._audit(
+            db,
+            proposal,
+            "action_proposal.canceled",
+            actor_person_id=actor_person_id,
+            before=before,
+            after={"status": proposal.status, "reason": reason},
+        )
+        logger.info("Canceled action proposal proposal=%s", proposal.id)
+        return proposal
+
+    def edit(
+        self,
+        db: Session,
+        proposal_id: str,
+        *,
+        payload: dict[str, Any],
+        actor_person_id: str | None = None,
+    ) -> ActionProposal:
+        proposal = self._proposal_or_error(db, proposal_id)
+        if proposal.status != "pending_approval":
+            raise ValueError(f"Cannot edit proposal in status {proposal.status}")
+        before = {"payload": proposal.payload_json, "status": proposal.status}
+        if not proposal.original_payload_json:
+            proposal.original_payload_json = proposal.payload_json or {}
+        proposal.payload_json = payload
+        proposal.updated_at = utcnow()
+        db.flush()
+        self._audit(
+            db,
+            proposal,
+            "action_proposal.edited",
+            actor_person_id=actor_person_id,
+            before=before,
+            after={"payload": proposal.payload_json, "original_payload": proposal.original_payload_json},
+        )
+        logger.info("Edited action proposal proposal=%s", proposal.id)
+        return proposal
+
     def execute(self, db: Session, proposal_id: str) -> ActionProposal:
-        proposal = db.query(ActionProposal).filter(ActionProposal.id == proposal_id).first()
-        if not proposal:
-            raise ValueError(f"Action proposal not found: {proposal_id}")
+        proposal = self._proposal_or_error(db, proposal_id)
         if proposal.requires_approval and proposal.status != "approved":
             logger.warning("Blocked unapproved action execution proposal=%s status=%s", proposal.id, proposal.status)
             raise ValueError("External write is blocked until proposal approval")
@@ -112,6 +193,49 @@ class ActionProposalService:
         db.flush()
         self._audit(db, proposal, "action_proposal.executed", after={"status": proposal.status})
         logger.info("Executed action proposal proposal=%s external_url=%s", proposal.id, proposal.external_url)
+        return proposal
+
+    def slack_blocks(self, proposal: ActionProposal) -> list[dict[str, Any]]:
+        draft = proposal.payload_json or {}
+        text = draft.get("text") or draft.get("body") or proposal.reason or proposal.title
+        citations = proposal.source_citations_json or []
+        citation_text = "No citations attached."
+        if citations:
+            citation_titles = [
+                citation.get("title") or citation.get("external_id") or citation.get("source") or "source"
+                for citation in citations[:3]
+            ]
+            citation_text = "Sources: " + ", ".join(str(item) for item in citation_titles)
+        return [
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*{proposal.title}*\n{proposal.reason or ''}".strip()}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"```{str(text)[:2400]}```"}},
+            {"type": "context", "elements": [{"type": "mrkdwn", "text": citation_text[:2800]}]},
+            {
+                "type": "actions",
+                "block_id": f"proposal:{proposal.id}",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Approve"},
+                        "style": "primary",
+                        "action_id": "approve_proposal",
+                        "value": proposal.id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Reject"},
+                        "style": "danger",
+                        "action_id": "reject_proposal",
+                        "value": proposal.id,
+                    },
+                ],
+            },
+        ]
+
+    def _proposal_or_error(self, db: Session, proposal_id: str) -> ActionProposal:
+        proposal = db.query(ActionProposal).filter(ActionProposal.id == proposal_id).first()
+        if not proposal:
+            raise ValueError(f"Action proposal not found: {proposal_id}")
         return proposal
 
     def _send_slack_dm(self, db: Session, proposal: ActionProposal) -> None:
@@ -222,6 +346,7 @@ class ActionProposalService:
         proposal: ActionProposal,
         action: str,
         *,
+        actor_person_id: str | None = None,
         before: dict[str, Any] | None = None,
         after: dict[str, Any] | None = None,
     ) -> None:
@@ -229,7 +354,7 @@ class ActionProposalService:
             AuditLog(
                 organization_id=proposal.organization_id,
                 user_id=proposal.user_id,
-                actor_person_id=proposal.approved_by_person_id or proposal.requested_by_person_id,
+                actor_person_id=actor_person_id or proposal.approved_by_person_id or proposal.rejected_by_person_id or proposal.requested_by_person_id,
                 action=action,
                 entity_type="action_proposal",
                 entity_id=proposal.id,

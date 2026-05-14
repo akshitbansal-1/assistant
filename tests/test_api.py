@@ -1,3 +1,5 @@
+import re
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -42,3 +44,32 @@ def test_ui_pages_render():
     assert "followup-question" in detail.text
     assert "retrieve-jira" in detail.text
     assert "memory-task" in detail.text
+
+
+def test_admin_invite_and_onboarding_flow_renders_user_list():
+    client = TestClient(app)
+    dashboard = client.get("/ui/dashboard")
+    assert dashboard.status_code == 200
+
+    invite = client.post(
+        "/ui/admin/invites",
+        data={"email": "new.user@example.com", "name": "New User", "role": "member", "manager_email": "demo@example.com"},
+        follow_redirects=False,
+    )
+    assert invite.status_code == 303
+
+    admin = client.get("/ui/admin")
+    assert admin.status_code == 200
+    assert "new.user@example.com" in admin.text
+    token = re.search(r"/onboard/([A-Za-z0-9_-]+)", admin.text).group(1)
+
+    onboard = client.get(f"/onboard/{token}")
+    assert onboard.status_code == 200
+    assert "new.user@example.com" in onboard.text
+
+    accepted = client.post(f"/onboard/{token}", data={"name": "New User"}, follow_redirects=False)
+    assert accepted.status_code == 303
+
+    users = client.get("/ui/admin")
+    assert users.status_code == 200
+    assert "New User" in users.text

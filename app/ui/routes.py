@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -12,12 +13,16 @@ from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.db import get_db
-from app.models.account import LinkedAccount, User
+from app.models.account import LinkedAccount, User, UserInvitation
 from app.models.communication import ActionProposal, AuditLog, Commitment, CommunicationTask, FollowUp, TaskStatusSnapshot
 from app.models.item import WorkItem
 from app.models.memory import KnownEntity, TrackedTask
 from app.models.summary import DailySummary
+from app.schemas.admin import InviteUserRequest
 from app.services.account import AccountService
+from app.services.actions import ActionProposalService
+from app.services.admin import AdminService
+from app.services.communication import CommunicationLoopService
 from app.services.oauth import OAuthService
 
 
@@ -93,6 +98,16 @@ def _account_health(account: LinkedAccount) -> dict[str, object]:
         "details": ", ".join(details) if details else None,
         "last_fetched_at": account.last_fetched_at,
     }
+
+
+def _organization_for_user(db: Session, user: User):
+    return CommunicationLoopService().get_or_create_organization_for_user(db, user)
+
+
+async def _urlencoded_form(request: Request) -> dict[str, str]:
+    body = await request.body()
+    parsed = parse_qs(body.decode(), keep_blank_values=True)
+    return {key: values[-1] if values else "" for key, values in parsed.items()}
 
 
 def require_current_user(request: Request, db: Session = Depends(get_db)) -> User:
@@ -310,6 +325,101 @@ def ui_dashboard(
             "audit_logs": audit_logs,
             "linked_provider": request.query_params.get("linked"),
             "enable_auth": settings.enable_auth,
+        },
+    )
+
+
+@router.get("/ui/admin", include_in_schema=False)
+def ui_admin(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user),
+):
+    org = _organization_for_user(db, current_user)
+    admin = AdminService()
+    members = admin.organization_members(db, org.id)
+    invites = admin.pending_invites(db, org.id)
+    people = admin.organization_people(db, org.id)
+    manager_by_id = {person.id: person for person in people}
+    return templates.TemplateResponse(
+        request,
+        "ui_admin.html",
+        {
+            "user": current_user,
+            "organization": org,
+            "members": members,
+            "invites": invites,
+            "people": people,
+            "manager_by_id": manager_by_id,
+            "base_url": str(request.base_url).rstrip("/"),
+        },
+    )
+
+
+@router.post("/ui/admin/invites", include_in_schema=False)
+async def ui_create_invite(
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user),
+):
+    form = await _urlencoded_form(request)
+    org = _organization_for_user(db, current_user)
+    payload = InviteUserRequest(
+        email=str(form.get("email") or ""),
+        name=str(form.get("name") or "") or None,
+        role=str(form.get("role") or "member"),
+        manager_email=str(form.get("manager_email") or "") or None,
+    )
+    AdminService().invite_user(db, organization=org, invited_by=current_user, payload=payload)
+    db.commit()
+    return RedirectResponse(url="/ui/admin?invited=1", status_code=303)
+
+
+@router.get("/onboard/{token}", include_in_schema=False)
+def ui_onboard(token: str, request: Request, db: Session = Depends(get_db)):
+    invite = db.query(UserInvitation).filter(UserInvitation.token == token).first()
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite not found")
+    return templates.TemplateResponse(request, "ui_onboard.html", {"invite": invite, "error": request.query_params.get("error")})
+
+
+@router.post("/onboard/{token}", include_in_schema=False)
+async def ui_accept_invite(token: str, request: Request, db: Session = Depends(get_db)):
+    form = await _urlencoded_form(request)
+    try:
+        user = AdminService().accept_invite(db, token=token, name=str(form.get("name") or "") or None)
+    except ValueError as exc:
+        db.rollback()
+        return RedirectResponse(url=f"/onboard/{token}?error={exc}", status_code=303)
+    db.commit()
+    request.session["user_email"] = user.email
+    return RedirectResponse(url="/ui/dashboard", status_code=303)
+
+
+@router.get("/ui/actions/{proposal_id}", include_in_schema=False)
+def ui_action_detail(
+    proposal_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_current_user),
+):
+    proposal = db.query(ActionProposal).filter(ActionProposal.id == proposal_id).first()
+    if not proposal:
+        raise HTTPException(status_code=404, detail="Proposal not found")
+    audit_logs = (
+        db.query(AuditLog)
+        .filter(AuditLog.entity_type == "action_proposal", AuditLog.entity_id == proposal.id)
+        .order_by(AuditLog.created_at.desc())
+        .all()
+    )
+    return templates.TemplateResponse(
+        request,
+        "ui_action_detail.html",
+        {
+            "user": current_user,
+            "proposal": proposal,
+            "audit_logs": audit_logs,
+            "slack_blocks": ActionProposalService().slack_blocks(proposal),
         },
     )
 

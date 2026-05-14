@@ -29,10 +29,12 @@ from app.models.communication import (
 )
 from app.models.item import WorkItem
 from app.services.actions import ActionProposalService
+from app.services.authorization import AuthorizationService
 from app.services.ingestion import IngestionService
 from app.services.intelligence import IntelligenceService
 from app.services.normalization import NormalizationService
 from app.services.retrieval import RetrievalService
+from app.services.search import SearchIndexService
 from app.utils.datetime import utcnow
 from app.utils.idempotency import extract_issue_keys, fingerprint_for_text
 
@@ -43,7 +45,9 @@ logger = logging.getLogger(__name__)
 class CommunicationLoopService:
     def __init__(self) -> None:
         self.actions = ActionProposalService()
+        self.authorization = AuthorizationService()
         self.retrieval = RetrievalService()
+        self.search = SearchIndexService()
 
     def get_or_create_organization_for_user(self, db: Session, user: User) -> Organization:
         domain = (user.email.split("@", 1)[1] if "@" in user.email else user.email).lower()
@@ -102,6 +106,7 @@ class CommunicationLoopService:
         person = Person(
             organization_id=organization_id,
             user_id=user_id,
+            manager_person_id=None,
             display_name=cleaned.strip("@"),
             email=email if email and "@" in email else cleaned if "@" in cleaned else None,
             aliases_json=[cleaned],
@@ -123,6 +128,7 @@ class CommunicationLoopService:
         )
         for item in items:
             self.upsert_task_from_item(db, org.id, user.id, item)
+            self.search.upsert_work_item(db, organization_id=org.id, user_id=user.id, item=item)
         for raw in extraction_payload.get("commitments", []):
             self.store_extracted_commitment(db, org.id, user.id, raw)
         db.flush()
@@ -220,6 +226,8 @@ class CommunicationLoopService:
             logger.info("Linked task source task=%s source=%s external_id=%s", task.id, item.source, item.external_id)
 
         self._snapshot(db, task)
+        self.search.upsert_task(db, task)
+        self.search.upsert_work_item(db, organization_id=organization_id, user_id=user_id, item=item)
         return task
 
     def store_extracted_commitment(
@@ -342,12 +350,41 @@ class CommunicationLoopService:
         )
         return commitment
 
-    def answer_whereis(self, db: Session, user: User, person: str, task_query: str) -> dict[str, Any]:
+    def answer_whereis(
+        self,
+        db: Session,
+        user: User,
+        person: str,
+        task_query: str,
+        *,
+        requester: str | None = None,
+        enforce_authorization: bool = False,
+    ) -> dict[str, Any]:
         org = self.get_or_create_organization_for_user(db, user)
         issue_keys = extract_issue_keys(task_query)
         if issue_keys:
             self.refresh_jira_issue_context(db, user, org.id, issue_keys[0])
         resolved_person = self.resolve_slack_person(db, user, org.id, person)
+        if enforce_authorization or requester:
+            requester_person = self.resolve_slack_person(db, user, org.id, requester or "") or self.get_or_create_person(
+                db,
+                org.id,
+                requester,
+                user_id=user.id if requester == user.email else None,
+                source_system="slack" if requester and not "@" in requester else None,
+                source_id=(requester or "").strip("<@>") or None,
+                email=requester if requester and "@" in requester else None,
+            )
+            target_person = resolved_person or self.get_or_create_person(db, org.id, person, source_system="slack", source_id=person.strip("<@>"))
+            if not self.authorization.can_ask_whereis(db, org.id, requester_person, target_person):
+                logger.warning(
+                    "Whereis denied org=%s requester=%s target=%s task_query=%s",
+                    org.id,
+                    requester_person.id if requester_person else None,
+                    target_person.id if target_person else None,
+                    task_query,
+                )
+                raise PermissionError("Only a manager, admin, or the task owner can ask /whereis for that person's tasks")
         retrieval_person = resolved_person.display_name if resolved_person else person
         logger.info("Whereis requested user=%s org=%s person=%s task_query=%s", user.email, org.id, person, task_query)
         result = self.retrieval.retrieve(

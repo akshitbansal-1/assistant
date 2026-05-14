@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Proposal · Work Intelligence</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <a class="nav-brand" href="/ui"><div class="nav-logo">W</div> Work Intelligence</a>
+      <a class="btn btn-secondary" href="/ui/dashboard" style="margin-left:auto;">Dashboard</a>
+    </nav>
+    <main class="shell">
+      <a class="back-link" href="/ui/dashboard">Back to dashboard</a>
+      <div class="page-kicker">Proposal</div>
+      <h1 class="page-title">{{ proposal.title }}</h1>
+      <p class="page-subtitle">{{ proposal.target_system }} · {{ proposal.proposal_type }} · {{ proposal.status }}</p>
+
+      <div class="split-grid" style="margin-top:24px;">
+        <section class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Draft payload</span>
+            <span class="panel-count">Editable before approval</span>
+          </div>
+          <div class="panel-body">
+            <label class="field">
+              <span>Payload JSON</span>
+              <textarea id="payload-json" rows="12">{{ proposal.payload_json | prettyjson }}</textarea>
+            </label>
+            <div class="btn-row compact">
+              <button class="btn btn-secondary" onclick="editProposal('{{ proposal.id }}')">Save edit</button>
+              <button class="btn btn-primary" onclick="approveProposal('{{ proposal.id }}', true)">Approve & send</button>
+              <button class="btn btn-secondary" onclick="approveProposal('{{ proposal.id }}', false)">Approve only</button>
+            </div>
+            <label class="field" style="margin-top:18px;">
+              <span>Reject reason</span>
+              <input id="reject-reason" value="Needs changes before sending" />
+            </label>
+            <button class="btn btn-secondary" onclick="rejectProposal('{{ proposal.id }}')">Reject</button>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Citations</span>
+            <span class="panel-count">{{ proposal.source_citations_json|length }}</span>
+          </div>
+          {% if proposal.source_citations_json %}
+            <div class="source-list" style="border:0; border-radius:0;">
+              <ul>
+                {% for citation in proposal.source_citations_json %}
+                  <li>
+                    {% if citation.get("url") %}
+                      <a href="{{ citation.get('url') }}" target="_blank" rel="noreferrer">{{ citation.get("title") or citation.get("external_id") or citation.get("source") }}</a>
+                    {% else %}
+                      {{ citation.get("title") or citation.get("external_id") or citation.get("source") }}
+                    {% endif %}
+                  </li>
+                {% endfor %}
+              </ul>
+            </div>
+          {% else %}
+            <div class="empty-state">
+              <h3>No citations attached</h3>
+              <p>Low-confidence proposal. Inspect carefully before approval.</p>
+            </div>
+          {% endif %}
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Audit history</span>
+          <span class="panel-count">{{ audit_logs|length }}</span>
+        </div>
+        {% for log in audit_logs %}
+          <div class="list-card">
+            <div class="list-card-top">
+              <div class="list-card-title">{{ log.action }}</div>
+              <span class="pill pill-neutral">{{ log.created_at }}</span>
+            </div>
+            {% if log.before_json or log.after_json %}
+              <details>
+                <summary>View details</summary>
+                <pre>{{ {"before": log.before_json, "after": log.after_json} | prettyjson }}</pre>
+              </details>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="empty-state"><h3>No audit entries</h3></div>
+        {% endfor %}
+      </section>
+    </main>
+    <div id="pipeline-toast"></div>
+    <script>
+      async function postJson(url, body) {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        return res.json();
+      }
+      function toast(message, kind = 'success') {
+        const box = document.getElementById('pipeline-toast');
+        box.className = `show ${kind}`;
+        box.textContent = message;
+      }
+      async function editProposal(id) {
+        try {
+          const payload = JSON.parse(document.getElementById('payload-json').value);
+          await postJson(`/api/v1/actions/${id}/edit`, { payload });
+          toast('Proposal saved');
+          setTimeout(() => window.location.reload(), 900);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      }
+      async function approveProposal(id, execute) {
+        try {
+          const data = await postJson(`/api/v1/actions/${id}/approve`, { execute });
+          toast(`Proposal ${data.status}`);
+          setTimeout(() => window.location.reload(), 900);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      }
+      async function rejectProposal(id) {
+        try {
+          const reason = document.getElementById('reject-reason').value.trim() || 'Rejected';
+          const data = await postJson(`/api/v1/actions/${id}/reject`, { reason });
+          toast(`Proposal ${data.status}`);
+          setTimeout(() => window.location.reload(), 900);
+        } catch (err) {
+          toast(err.message, 'error');
+        }
+      }
+    </script>
+  </body>
+</html>

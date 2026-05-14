@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Onboard · Work Intelligence</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <main class="shell narrow">
+      <section class="panel" style="margin-top:64px;">
+        <div class="panel-head">
+          <span class="panel-title">Join workspace</span>
+          <span class="panel-count">{{ invite.role }}</span>
+        </div>
+        <form class="panel-body" method="post">
+          {% if error %}
+            <div class="banner banner-error">{{ error }}</div>
+          {% endif %}
+          <p class="page-subtitle" style="margin-bottom:18px;">{{ invite.email }}</p>
+          <label class="field">
+            <span>Name</span>
+            <input name="name" value="{{ invite.name or '' }}" placeholder="Your name" />
+          </label>
+          <button class="btn btn-primary" type="submit">Accept invite</button>
+        </form>
+      </section>
+    </main>
+  </body>
+</html>

@@ -15,6 +15,7 @@
       {% if enable_auth %}
         <a class="btn btn-secondary" href="/auth/logout" style="margin-left:auto;">Sign out</a>
       {% endif %}
+      <a class="btn btn-secondary" href="/ui/admin" style="{% if not enable_auth %}margin-left:auto;{% endif %}">Admin</a>
     </nav>
 
     <main class="shell">
@@ -245,6 +246,7 @@
                 </div>
                 <p class="text-2" style="font-size:0.83rem; margin:0 0 4px;">{{ proposal.reason or "Awaiting approval" }}</p>
                 <div class="btn-row" style="margin-top:8px;">
+                  <a class="btn btn-secondary" href="/ui/actions/{{ proposal.id }}">Inspect</a>
                   <button class="btn btn-secondary" onclick="approveProposal('{{ proposal.id }}', false)">Approve</button>
                   {% if proposal.target_system in ["slack", "jira"] %}
                     <button class="btn btn-primary" onclick="approveProposal('{{ proposal.id }}', true)">Approve & send</button>

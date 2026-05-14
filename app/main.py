@@ -21,14 +21,23 @@ configure_logging()
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     insp = inspect(engine)
-    existing_cols = [c["name"] for c in insp.get_columns("linked_accounts")]
-    if "last_fetched_at" not in existing_cols:
-        with engine.begin() as conn:
-            conn.execute(text("ALTER TABLE linked_accounts ADD COLUMN last_fetched_at TIMESTAMP NULL"))
+    _add_column_if_missing(insp, "linked_accounts", "last_fetched_at", "TIMESTAMP NULL")
+    _add_column_if_missing(insp, "people", "manager_person_id", "VARCHAR NULL")
+    _add_column_if_missing(insp, "action_proposals", "rejected_by_person_id", "VARCHAR NULL")
+    _add_column_if_missing(insp, "action_proposals", "rejected_at", "TIMESTAMP NULL")
+    _add_column_if_missing(insp, "action_proposals", "rejection_reason", "TEXT NULL")
+    _add_column_if_missing(insp, "action_proposals", "original_payload_json", "JSON NULL")
     yield
 
 
-app = FastAPI(title="Daily Work Intelligence Agent", version="0.1.0", lifespan=lifespan)
+def _add_column_if_missing(insp, table_name: str, column_name: str, column_sql: str) -> None:
+    existing_cols = [c["name"] for c in insp.get_columns(table_name)]
+    if column_name not in existing_cols:
+        with engine.begin() as conn:
+            conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"))
+
+
+app = FastAPI(title="Communication Loop Tracker", version="0.2.0", lifespan=lifespan)
 app.add_middleware(SessionMiddleware, secret_key=get_settings().secret_key)
 app.include_router(router)
 app.include_router(ui_router)

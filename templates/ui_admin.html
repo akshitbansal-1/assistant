@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin · Work Intelligence</title>
+    <link rel="stylesheet" href="/static/ui.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <a class="nav-brand" href="/ui"><div class="nav-logo">W</div> Work Intelligence</a>
+      <a class="btn btn-secondary" href="/ui/dashboard" style="margin-left:auto;">Dashboard</a>
+    </nav>
+    <main class="shell">
+      <div class="page-kicker">Admin</div>
+      <h1 class="page-title">{{ organization.name }}</h1>
+      <p class="page-subtitle">Invite teammates, set roles, and keep reporting lines explicit.</p>
+
+      <div class="split-grid" style="margin-top:24px;">
+        <section class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Invite user</span>
+            <span class="panel-count">Onboarding</span>
+          </div>
+          <form class="panel-body" method="post" action="/ui/admin/invites">
+            <div class="field-grid two">
+              <label class="field">
+                <span>Email</span>
+                <input name="email" type="email" required placeholder="teammate@example.com" />
+              </label>
+              <label class="field">
+                <span>Name</span>
+                <input name="name" placeholder="Optional" />
+              </label>
+            </div>
+            <div class="field-grid two">
+              <label class="field">
+                <span>Role</span>
+                <select name="role">
+                  <option value="member">Member</option>
+                  <option value="manager">Manager</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>Manager email</span>
+                <input name="manager_email" type="email" placeholder="manager@example.com" />
+              </label>
+            </div>
+            <button class="btn btn-primary" type="submit">Create invite</button>
+          </form>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <span class="panel-title">Pending invites</span>
+            <span class="panel-count">{{ invites|length }}</span>
+          </div>
+          {% if invites %}
+            {% for invite in invites %}
+              <div class="list-card">
+                <div class="list-card-top">
+                  <div>
+                    <div class="list-card-title">{{ invite.email }}</div>
+                    <div class="tiny">{{ invite.role }} · expires {{ invite.expires_at }}</div>
+                  </div>
+                  <a class="btn btn-secondary btn-small" href="/onboard/{{ invite.token }}">Open</a>
+                </div>
+                <pre>{{ base_url }}/onboard/{{ invite.token }}</pre>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty-state">
+              <h3>No pending invites</h3>
+              <p>New invite links will appear here after creation.</p>
+            </div>
+          {% endif %}
+        </section>
+      </div>
+
+      <section class="panel">
+        <div class="panel-head">
+          <span class="panel-title">Users</span>
+          <span class="panel-count">{{ members|length }}</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Role</th>
+                <th>Person</th>
+                <th>Manager</th>
+                <th>Joined</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for member, member_user, person in members %}
+                <tr>
+                  <td>
+                    <div class="list-card-title">{{ member_user.name or member_user.email.split("@")[0] }}</div>
+                    <div class="tiny">{{ member_user.email }}</div>
+                  </td>
+                  <td><span class="pill pill-neutral">{{ member.role }}</span></td>
+                  <td>{{ person.display_name if person else "Not mapped" }}</td>
+                  <td>
+                    {% if person and person.manager_person_id and manager_by_id.get(person.manager_person_id) %}
+                      {{ manager_by_id.get(person.manager_person_id).display_name }}
+                    {% else %}
+                      <span class="tiny">None</span>
+                    {% endif %}
+                  </td>
+                  <td class="tiny">{{ member.created_at }}</td>
+                </tr>
+              {% else %}
+                <tr><td colspan="5" class="empty-cell">No users yet</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

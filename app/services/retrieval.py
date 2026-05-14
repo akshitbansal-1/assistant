@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.models.communication import Commitment, CommunicationTask, Person, TaskSource, TaskStatusSnapshot
 from app.models.item import WorkItem
+from app.services.search import SearchIndexService
 from app.utils.idempotency import extract_issue_keys
 
 
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievalService:
+    def __init__(self) -> None:
+        self.search = SearchIndexService()
+
     def retrieve(
         self,
         db: Session,
@@ -78,6 +82,30 @@ class RetrievalService:
                     .all()
                 )
 
+        search_trace: list[dict[str, Any]] = []
+        if not tasks and task_query:
+            search_hits = self.search.search(db, organization_id=organization_id, query=task_query, limit=limit)
+            search_trace = [
+                {
+                    "entity_type": hit["entity_type"],
+                    "entity_id": hit["entity_id"],
+                    "title": hit["title"],
+                    "score": hit["score"],
+                    "metadata": hit["metadata"],
+                }
+                for hit in search_hits
+            ]
+            task_ids_from_search = [hit["entity_id"] for hit in search_hits if hit["entity_type"] == "task"]
+            work_item_ids_from_search = [hit["entity_id"] for hit in search_hits if hit["entity_type"] == "work_item"]
+            if task_ids_from_search:
+                tasks = (
+                    db.query(CommunicationTask)
+                    .filter(CommunicationTask.organization_id == organization_id, CommunicationTask.id.in_(task_ids_from_search))
+                    .all()
+                )
+            if work_item_ids_from_search and not key:
+                item_query = db.query(WorkItem).filter(WorkItem.user_id == user_id, WorkItem.id.in_(work_item_ids_from_search))
+
         task_ids = [task.id for task in tasks]
         commitment_query = db.query(Commitment).filter(Commitment.organization_id == organization_id)
         if task_ids:
@@ -88,7 +116,7 @@ class RetrievalService:
             commitment_query = commitment_query.filter(Commitment.status == commitment_status)
         commitments = commitment_query.order_by(Commitment.updated_at.desc()).limit(limit).all()
 
-        item_query = db.query(WorkItem).filter(WorkItem.user_id == user_id)
+        item_query = locals().get("item_query") or db.query(WorkItem).filter(WorkItem.user_id == user_id)
         if key:
             item_query = item_query.filter(WorkItem.dedupe_key == f"issue:{key}")
         elif task_query:
@@ -113,13 +141,14 @@ class RetrievalService:
 
         citations = self.citations_for(tasks, items)
         logger.info(
-            "Retrieval finished org=%s tasks=%d commitments=%d snapshots=%d items=%d citations=%d",
+            "Retrieval finished org=%s tasks=%d commitments=%d snapshots=%d items=%d citations=%d search_hits=%d",
             organization_id,
             len(tasks),
             len(commitments),
             len(snapshots),
             len(items),
             len(citations),
+            len(search_trace),
         )
         return {
             "person": person_record,
@@ -128,6 +157,7 @@ class RetrievalService:
             "snapshots": snapshots,
             "items": items,
             "citations": citations,
+            "search_trace": search_trace,
         }
 
     def citations_for(self, tasks: list[CommunicationTask], items: list[WorkItem]) -> list[dict[str, Any]]:

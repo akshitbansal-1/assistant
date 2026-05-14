@@ -1,7 +1,14 @@
+import json
+import hashlib
+import hmac
+import time
+from urllib.parse import urlencode
+
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.models.communication import ActionProposal, Commitment
+from app.config import get_settings
+from app.models.communication import ActionProposal, AuditLog, Commitment, OrganizationMember, Person
 from app.models.account import User
 from app.db import SessionLocal
 from app.models.account import LinkedAccount
@@ -253,3 +260,121 @@ def test_approved_jira_update_can_execute_after_human_approval(monkeypatch):
     assert approved.json()["status"] == "executed"
     assert calls[0]["url"].endswith("/rest/api/3/issue/JIRA-123/comment")
     assert calls[0]["json"]["body"]["type"] == "doc"
+
+
+def test_action_proposal_can_be_edited_and_rejected_with_audit_history():
+    client = TestClient(app)
+    _seed_pipeline(client)
+
+    followup = client.post(
+        "/api/v1/communication/followups",
+        json={
+            "user_email": "demo@example.com",
+            "person": "bob",
+            "task": "JIRA-123",
+            "question": "Can you send a tighter ETA?",
+            "requester": "manager@example.com",
+        },
+    ).json()
+
+    edited = client.post(
+        f"/api/v1/actions/{followup['proposal_id']}/edit",
+        json={"payload": {"target_slack_user_id": "bob", "text": "Edited follow-up", "follow_up_id": followup["follow_up_id"]}},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["payload"]["text"] == "Edited follow-up"
+
+    rejected = client.post(
+        f"/api/v1/actions/{followup['proposal_id']}/reject",
+        json={"reason": "Wrong tone"},
+    )
+    assert rejected.status_code == 200
+    assert rejected.json()["status"] == "rejected"
+
+    blocked = client.post(f"/api/v1/actions/{followup['proposal_id']}/execute")
+    assert blocked.status_code == 400
+
+    with SessionLocal() as db:
+        proposal = db.query(ActionProposal).filter(ActionProposal.id == followup["proposal_id"]).first()
+        assert proposal.original_payload_json["text"] != proposal.payload_json["text"]
+        actions = {row.action for row in db.query(AuditLog).filter(AuditLog.entity_id == proposal.id).all()}
+        assert "action_proposal.edited" in actions
+        assert "action_proposal.rejected" in actions
+
+
+def test_whereis_hierarchy_denies_colleague_but_allows_manager():
+    client = TestClient(app)
+    _seed_pipeline(client)
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == "demo@example.com").first()
+        loop = CommunicationLoopService()
+        org = loop.get_or_create_organization_for_user(db, user)
+        from app.services.account import AccountService
+
+        accounts = AccountService()
+        manager = accounts.get_or_create_user(db, "manager@example.com", "Manager")
+        colleague = accounts.get_or_create_user(db, "colleague@example.com", "Colleague")
+        manager_person = loop.get_or_create_person(db, org.id, "Manager", user_id=manager.id, email=manager.email)
+        colleague_person = loop.get_or_create_person(db, org.id, "Colleague", user_id=colleague.id, email=colleague.email)
+        bob = db.query(Person).filter(Person.organization_id == org.id, Person.display_name.ilike("%bob%")).first()
+        bob.manager_person_id = manager_person.id
+        db.add(OrganizationMember(organization_id=org.id, user_id=manager.id, role="manager"))
+        db.add(OrganizationMember(organization_id=org.id, user_id=colleague.id, role="member"))
+        db.commit()
+
+    manager_allowed = client.post(
+        "/api/v1/communication/whereis",
+        json={"user_email": "demo@example.com", "person": "bob", "task": "JIRA-123", "requester": "manager@example.com"},
+    )
+    assert manager_allowed.status_code == 200
+
+    colleague_denied = client.post(
+        "/api/v1/communication/whereis",
+        json={"user_email": "demo@example.com", "person": "bob", "task": "JIRA-123", "requester": "colleague@example.com"},
+    )
+    assert colleague_denied.status_code == 403
+
+
+def test_slack_interaction_rejects_proposal_from_manager_button():
+    client = TestClient(app)
+    _seed_pipeline(client)
+    followup = client.post(
+        "/api/v1/communication/followups",
+        json={
+            "user_email": "demo@example.com",
+            "person": "bob",
+            "task": "JIRA-123",
+            "question": "Can you send a status?",
+            "requester": "manager@example.com",
+        },
+    ).json()
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == "demo@example.com").first()
+        loop = CommunicationLoopService()
+        org = loop.get_or_create_organization_for_user(db, user)
+        from app.services.account import AccountService
+
+        manager = AccountService().get_or_create_user(db, "manager@example.com", "Manager")
+        loop.get_or_create_person(db, org.id, "manager@example.com", user_id=manager.id, email=manager.email)
+        db.add(OrganizationMember(organization_id=org.id, user_id=manager.id, role="manager"))
+        db.commit()
+
+    payload = {
+        "type": "block_actions",
+        "user": {"id": "manager@example.com"},
+        "actions": [{"action_id": "reject_proposal", "value": followup["proposal_id"]}],
+    }
+    body = urlencode({"payload": json.dumps(payload)})
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    secret = get_settings().slack_signing_secret
+    if secret:
+        timestamp = str(int(time.time()))
+        base = f"v0:{timestamp}:{body}".encode()
+        headers["x-slack-request-timestamp"] = timestamp
+        headers["x-slack-signature"] = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    response = client.post("/api/v1/slack/interactions", content=body, headers=headers)
+
+    assert response.status_code == 200
+    assert "Rejected proposal" in response.json()["text"]
