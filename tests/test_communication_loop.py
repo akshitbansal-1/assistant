@@ -8,12 +8,14 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.config import get_settings
-from app.models.communication import ActionProposal, AuditLog, Commitment, OrganizationMember, Person
+from app.models.communication import ActionProposal, AuditLog, Commitment, CommunicationTask, MemoryEvent, OrganizationMember, Person
 from app.models.account import User
 from app.db import SessionLocal
 from app.models.account import LinkedAccount
 from app.services.commitments import CommitmentExtractionService
 from app.services.communication import CommunicationLoopService
+from app.services.verification import VerificationService
+from app.workers.tasks import run_stale_alert_agent
 
 
 def _seed_pipeline(client: TestClient) -> None:
@@ -58,6 +60,8 @@ def test_whereis_returns_source_backed_task_memory():
     retrieved = retrieval.json()
     assert retrieved["tasks"]
     assert retrieved["citations"]
+    assert retrieved["retrieval_trace"]
+    assert {step["stage"] for step in retrieved["retrieval_trace"]} >= {"structured_task_query", "context_budget"}
 
 
 def test_followup_reply_updates_memory_and_jira_draft_is_approval_gated():
@@ -169,6 +173,20 @@ def test_stale_jira_detection_creates_approval_gated_draft():
     assert body["proposals"]
     assert body["proposals"][0]["status"] == "pending_approval"
     assert body["proposals"][0]["payload"]["operation"] == "add_comment"
+    with SessionLocal() as db:
+        event_types = {event.event_type for event in db.query(MemoryEvent).all()}
+        assert "agent.stale_alert.started" in event_types
+        assert "agent.stale_alert.finished" in event_types
+
+
+def test_stale_alert_agent_worker_runs_for_all_users():
+    client = TestClient(app)
+    _seed_pipeline(client)
+
+    result = run_stale_alert_agent()
+
+    assert result["processed_users"] >= 1
+    assert result["proposal_count"] >= 1
 
 
 def test_tenant_scoped_memory_does_not_cross_users():
@@ -260,6 +278,29 @@ def test_approved_jira_update_can_execute_after_human_approval(monkeypatch):
     assert approved.json()["status"] == "executed"
     assert calls[0]["url"].endswith("/rest/api/3/issue/JIRA-123/comment")
     assert calls[0]["json"]["body"]["type"] == "doc"
+
+
+def test_verification_agent_records_claim_decision():
+    client = TestClient(app)
+    _seed_pipeline(client)
+
+    with SessionLocal() as db:
+        user = db.query(User).filter(User.email == "demo@example.com").first()
+        task = db.query(CommunicationTask).filter(CommunicationTask.jira_key == "JIRA-123").first()
+
+        result = VerificationService().verify_task_claim(
+            db,
+            user,
+            task=task,
+            claimed_status="I merged the PR for JIRA-123.",
+            source_context="Slack thread C123/T456",
+        )
+        db.commit()
+
+        assert result["action"] in {"updated", "suggestion"}
+        event_types = {event.event_type for event in db.query(MemoryEvent).all()}
+        assert "agent.verification.started" in event_types
+        assert "agent.verification.finished" in event_types
 
 
 def test_action_proposal_can_be_edited_and_rejected_with_audit_history():

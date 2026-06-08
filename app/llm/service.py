@@ -9,7 +9,14 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.config import get_settings
-from app.llm.prompts import CLASSIFICATION_SYSTEM_PROMPT, COMMITMENT_EXTRACTION_SYSTEM_PROMPT, SUMMARY_SYSTEM_PROMPT
+from app.llm.prompts import (
+    CLASSIFICATION_SYSTEM_PROMPT,
+    COMMITMENT_EXTRACTION_SYSTEM_PROMPT,
+    RETRIEVAL_INTENT_SYSTEM_PROMPT,
+    SUMMARY_SYSTEM_PROMPT,
+    VERIFICATION_SYSTEM_PROMPT,
+    build_correction_block,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -36,7 +43,11 @@ class LLMService:
     def __init__(self) -> None:
         self.settings = get_settings()
 
-    def classify_items(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def classify_items(
+        self,
+        items: list[dict[str, Any]],
+        corrections: list[dict] | None = None,
+    ) -> list[dict[str, Any]]:
         if not items:
             return []
 
@@ -57,9 +68,13 @@ class LLMService:
                 for item in llm_items
             ]
             prompt = json.dumps(trimmed, default=str)
+            system_prompt = self._build_corrected_system_prompt(
+                CLASSIFICATION_SYSTEM_PROMPT,
+                corrections or [],
+            )
             try:
                 result = self._complete_json(
-                    system_prompt=CLASSIFICATION_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     user_prompt=prompt,
                     max_tokens=max(4096, len(llm_items) * 300),
                 )
@@ -83,21 +98,37 @@ class LLMService:
 
         return results  # type: ignore[return-value]
 
-    def classify_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        return self.classify_items([item])[0]
+    def classify_item(
+        self,
+        item: dict[str, Any],
+        corrections: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        return self.classify_items([item], corrections=corrections)[0]
 
-    def summarize(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def summarize(
+        self,
+        payload: dict[str, Any],
+        corrections: list[dict] | None = None,
+    ) -> dict[str, Any]:
         prompt = json.dumps(payload, default=str)
+        system_prompt = self._build_corrected_system_prompt(
+            SUMMARY_SYSTEM_PROMPT,
+            corrections or [],
+        )
         try:
             return self._complete_json(
-                system_prompt=SUMMARY_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=prompt,
             )
         except Exception:
             logger.exception("LLM summary failed, returning heuristic summary payload")
             return payload
 
-    def extract_commitments(self, items: list[dict[str, Any]]) -> dict[str, Any]:
+    def extract_commitments(
+        self,
+        items: list[dict[str, Any]],
+        corrections: list[dict] | None = None,
+    ) -> dict[str, Any]:
         if not items:
             return {"commitments": []}
         logger.info("Extracting commitments from %d item(s)", len(items))
@@ -113,9 +144,13 @@ class LLMService:
             }
             for item in items
         ]
+        system_prompt = self._build_corrected_system_prompt(
+            COMMITMENT_EXTRACTION_SYSTEM_PROMPT,
+            corrections or [],
+        )
         try:
             result = self._complete_json(
-                system_prompt=COMMITMENT_EXTRACTION_SYSTEM_PROMPT,
+                system_prompt=system_prompt,
                 user_prompt=json.dumps({"items": trimmed}, default=str),
                 max_tokens=max(2048, len(trimmed) * 500),
             )
@@ -137,6 +172,89 @@ class LLMService:
         if provider == "mock":
             return self._mock_json(system_prompt, user_prompt)
         raise ValueError(f"Unsupported LLM provider: {provider}")
+
+    def extract_retrieval_intent(self, query: str) -> dict[str, Any]:
+        """Parse a free-form user query into structured retrieval parameters.
+
+        Returns a dict with optional keys: person, jira_key, task_query, project,
+        commitment_status, intent.  Falls back to a minimal dict on error.
+        """
+        if not query or not query.strip():
+            return {"intent": "general"}
+        try:
+            result = self._complete_json(
+                system_prompt=RETRIEVAL_INTENT_SYSTEM_PROMPT,
+                user_prompt=query.strip(),
+                max_tokens=512,
+            )
+            if isinstance(result, dict):
+                result.setdefault("intent", "general")
+                logger.info(
+                    "Retrieval intent parsed intent=%s person=%s jira_key=%s",
+                    result.get("intent"),
+                    result.get("person"),
+                    result.get("jira_key"),
+                )
+                return result
+        except Exception:
+            logger.warning("Retrieval intent parsing failed, falling back to raw query")
+        return {"intent": "general", "task_query": query.strip()}
+
+    def verify_claim(
+        self,
+        claimed_status: str,
+        external_data: dict[str, Any],
+        source_context: str = "",
+    ) -> dict[str, Any]:
+        """Cross-check a human status claim against external source data (e.g. Jira issue).
+
+        Returns a dict with: verified, confidence, discrepancy, suggested_status, reasoning.
+        """
+        prompt = json.dumps(
+            {
+                "claimed_status": claimed_status[:600],
+                "external_data": external_data,
+                "source_context": source_context[:300],
+            },
+            default=str,
+        )
+        try:
+            result = self._complete_json(
+                system_prompt=VERIFICATION_SYSTEM_PROMPT,
+                user_prompt=prompt,
+                max_tokens=512,
+            )
+            if isinstance(result, dict) and "verified" in result:
+                logger.info(
+                    "Claim verification completed verified=%s confidence=%.2f",
+                    result.get("verified"),
+                    float(result.get("confidence") or 0),
+                )
+                return result
+        except Exception:
+            logger.warning("Claim verification failed, returning unverified result")
+        return {
+            "verified": False,
+            "confidence": 0.3,
+            "discrepancy": None,
+            "suggested_status": None,
+            "reasoning": "Verification could not be completed.",
+        }
+
+    def _build_corrected_system_prompt(
+        self,
+        base_prompt: str,
+        corrections: list[dict],
+        max_corrections: int = 5,
+    ) -> str:
+        """Append a CRITICAL MISTAKES TO AVOID block to a system prompt.
+
+        Only the most recent ``max_corrections`` negative corrections are injected
+        to avoid exceeding context limits.
+        """
+        recent = corrections[-max_corrections:] if corrections else []
+        correction_block = build_correction_block(recent)
+        return base_prompt + correction_block
 
     @retry(wait=wait_exponential(multiplier=2, min=5, max=60), stop=stop_after_attempt(4), reraise=True)
     def _gemini_json(self, system_prompt: str, user_prompt: str, max_tokens: int = 2048) -> dict[str, Any]:

@@ -33,10 +33,10 @@ def test_pipeline_end_to_end_idempotent():
         db.commit()
 
         pipeline = DailyWorkPipeline()
-        # Use 168h (1 week) so that sample data timestamps (a few days old) fall in the window
-        result_one = pipeline.run(db, user_email=user_email, lookback_hours=168, delivery_channel="db")
+        # Use 1000h so that sample data timestamps (from May 11, 2026) consistently fall in the window
+        result_one = pipeline.run(db, user_email=user_email, lookback_hours=1000, delivery_channel="db")
         db.commit()
-        result_two = pipeline.run(db, user_email=user_email, lookback_hours=168, delivery_channel="db")
+        result_two = pipeline.run(db, user_email=user_email, lookback_hours=1000, delivery_channel="db")
         db.commit()
 
         # Jira sample has actionable items (blocker + task keywords) — at least one should survive pruning
@@ -260,5 +260,61 @@ def test_memory_removes_owner_aliases_from_known_entities():
 
         names = [entity.name for entity in db.query(KnownEntity).filter(KnownEntity.user_id == account.user_id).all()]
         assert names == ["Teammate <teammate@example.com>"]
+    finally:
+        db.close()
+
+
+def test_ingestion_refreshes_slack_user_token(monkeypatch):
+    db = SessionLocal()
+    try:
+        # Create a linked Slack account where user_expires_at is expired (past)
+        account = AccountService().upsert_linked_account(
+            db,
+            AccountCreate(
+                user_email="demo@example.com",
+                source="slack",
+                label="Slack Workspace",
+                account_identifier="slack-user-refresh-test",
+                user_access_token="old-user-access",
+                user_refresh_token="old-user-refresh",
+                user_expires_at=datetime.now(timezone.utc) - timedelta(hours=1),
+            ),
+        )
+        db.commit()
+
+        def fake_refresh(self, provider, refresh_token):
+            assert provider == "slack"
+            assert refresh_token == "old-user-refresh"
+            return {
+                "access_token": "new-user-access",
+                "refresh_token": "new-user-refresh",
+                "expires_in": 3600,
+            }
+
+        monkeypatch.setattr("app.services.ingestion.OAuthService.refresh_token", fake_refresh)
+        service = IngestionService()
+        
+        # Mock connector.fetch_recent_items to see if the fresh token was passed down
+        class SlackFakeConnector:
+            def __init__(self):
+                self.seen_tokens = []
+            def fetch_recent_items(self, account, start_at, end_at):
+                self.seen_tokens.append(account.user_access_token)
+                return []
+
+        connector = SlackFakeConnector()
+        service.connectors["slack"] = connector
+
+        service.fetch_raw_items(db, account, datetime.now(timezone.utc), datetime.now(timezone.utc))
+
+        # Assertions
+        assert len(connector.seen_tokens) == 1
+        # Decrypted token passed to connector must be the new token
+        from app.services.oauth import TokenCipher
+        cipher = TokenCipher()
+        assert cipher.decrypt(connector.seen_tokens[0]) == "new-user-access"
+        assert cipher.decrypt(account.user_access_token) == "new-user-access"
+        assert cipher.decrypt(account.user_refresh_token) == "new-user-refresh"
+        assert account.user_expires_at is not None
     finally:
         db.close()

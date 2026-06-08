@@ -80,9 +80,14 @@ class OAuthService:
             headers["Authorization"] = f"Basic {token}"
             data = {"grant_type": "authorization_code", "code": code, "redirect_uri": config["redirect_uri"]}
         with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
-            response = client.post(config["token_url"], data=data, headers=headers, auth=auth)
+            if provider == "jira":
+                response = client.post(config["token_url"], json=data, headers={"Content-Type": "application/json"})
+            else:
+                response = client.post(config["token_url"], data=data, headers=headers, auth=auth)
             response.raise_for_status()
             payload = response.json()
+        if provider == "slack" and payload.get("ok") is False:
+            raise ValueError(payload.get("error") or "Slack OAuth exchange failed")
         expires_in = payload.get("expires_in")
         if expires_in:
             payload["expires_at"] = (datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))).isoformat()
@@ -100,7 +105,10 @@ class OAuthService:
         }
         with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
             logger.info("Refreshing OAuth token provider=%s token_url=%s", provider, config["token_url"])
-            response = client.post(config["token_url"], data=data)
+            if provider == "jira":
+                response = client.post(config["token_url"], json=data, headers={"Content-Type": "application/json"})
+            else:
+                response = client.post(config["token_url"], data=data)
             response.raise_for_status()
             payload = response.json()
         expires_in = payload.get("expires_in")
@@ -129,7 +137,25 @@ class OAuthService:
             raise ValueError("Invalid OAuth state")
         return payload
 
-    def fetch_account_identity(self, provider: str, token_payload: dict[str, Any]) -> dict[str, str]:
+    def safe_oauth_metadata(self, token_payload: dict[str, Any]) -> dict[str, Any]:
+        sensitive_keys = {"access_token", "refresh_token", "id_token"}
+
+        def scrub(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {key: scrub(item) for key, item in value.items() if key not in sensitive_keys}
+            if isinstance(value, list):
+                return [scrub(item) for item in value]
+            return value
+
+        return scrub(token_payload)
+
+    def fetch_account_identity(self, provider: str, token_payload: dict[str, Any]) -> dict[str, Any]:
+        identities = self.fetch_account_identities(provider, token_payload)
+        if not identities:
+            raise ValueError(f"No account identity found for provider: {provider}")
+        return identities[0]
+
+    def fetch_account_identities(self, provider: str, token_payload: dict[str, Any]) -> list[dict[str, Any]]:
         import httpx
 
         provider = provider.lower()
@@ -142,10 +168,10 @@ class OAuthService:
                 )
                 response.raise_for_status()
                 profile = response.json()
-            return {
+            return [{
                 "email": profile.get("email", ""),
                 "name": profile.get("name") or profile.get("email", ""),
-            }
+            }]
         if provider == "gmail":
             access_token = token_payload.get("access_token")
             with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
@@ -155,17 +181,32 @@ class OAuthService:
                 )
                 response.raise_for_status()
                 profile = response.json()
-            return {
+            return [{
                 "account_identifier": profile.get("email", profile.get("id", "gmail")),
                 "label": profile.get("email", "Google account"),
-            }
+            }]
         if provider == "slack":
             team = token_payload.get("team") or {}
             authed_user = token_payload.get("authed_user") or {}
             enterprise = token_payload.get("enterprise") or {}
-            return {
-                "account_identifier": team.get("id") or authed_user.get("id") or "slack",
-                "label": team.get("name") or "Slack workspace",
+            team_id = team.get("id")
+            authed_user_id = authed_user.get("id")
+            account_identifier = ":".join(part for part in [team_id, authed_user_id] if part) or "slack"
+            label = team.get("name") or "Slack workspace"
+            if authed_user_id:
+                label = f"{label} ({authed_user_id})"
+            
+            user_expires_in = authed_user.get("expires_in")
+            user_expires_at = None
+            if user_expires_in:
+                user_expires_at = (datetime.now(timezone.utc) + timedelta(seconds=int(user_expires_in))).isoformat()
+
+            return [{
+                "account_identifier": account_identifier,
+                "label": label,
+                "user_access_token": authed_user.get("access_token"),
+                "user_refresh_token": authed_user.get("refresh_token"),
+                "user_expires_at": user_expires_at,
                 "extra_metadata": {
                     "team_id": team.get("id"),
                     "team_name": team.get("name"),
@@ -173,8 +214,10 @@ class OAuthService:
                     "authed_user_id": authed_user.get("id"),
                     "bot_user_id": token_payload.get("bot_user_id"),
                     "user_id": authed_user.get("id"),
+                    "bot_scope": token_payload.get("scope"),
+                    "user_scope": authed_user.get("scope"),
                 },
-            }
+            }]
         if provider == "notion":
             workspace_name = token_payload.get("workspace_name") or "Notion workspace"
             workspace_id = token_payload.get("workspace_id") or token_payload.get("workspace_icon") or "notion"
@@ -192,11 +235,11 @@ class OAuthService:
                     )
                     if response.is_success:
                         database_ids = [r["id"] for r in response.json().get("results", [])]
-            return {
+            return [{
                 "account_identifier": workspace_id,
                 "label": workspace_name,
                 "extra_metadata": {"database_ids": database_ids},
-            }
+            }]
         if provider == "jira":
             access_token = token_payload.get("access_token")
             with httpx.Client(timeout=self.settings.request_timeout_seconds) as client:
@@ -205,21 +248,32 @@ class OAuthService:
                     headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
                 )
                 response.raise_for_status()
-                resources = response.json()
+            resources = response.json()
             if not resources:
                 raise ValueError("No accessible Jira resources found for this account")
-            resource = resources[0]
-            cloud_id = resource["id"]
-            site_url = resource.get("url")
-            return {
-                "account_identifier": cloud_id,
-                "label": resource.get("name", "Jira workspace"),
-                "extra_metadata": {
-                    "cloud_id": cloud_id,
-                    "site_url": site_url,
-                    "base_url": f"https://api.atlassian.com/ex/jira/{cloud_id}",
-                },
-            }
+            identities: list[dict[str, Any]] = []
+            for resource in resources:
+                scopes = set(resource.get("scopes") or [])
+                if not {"read:jira-work", "read:jira-user"}.issubset(scopes):
+                    continue
+                cloud_id = resource["id"]
+                site_url = resource.get("url")
+                identities.append(
+                    {
+                        "account_identifier": cloud_id,
+                        "label": resource.get("name", "Jira workspace"),
+                        "extra_metadata": {
+                            "cloud_id": cloud_id,
+                            "site_url": site_url,
+                            "base_url": f"https://api.atlassian.com/ex/jira/{cloud_id}",
+                            "avatar_url": resource.get("avatarUrl"),
+                            "scopes": sorted(scopes),
+                        },
+                    }
+                )
+            if not identities:
+                raise ValueError("No accessible Jira resources include the required scopes")
+            return identities
         raise ValueError(f"Unsupported provider: {provider}")
 
     def _provider_config(self, provider: str) -> dict[str, Any]:

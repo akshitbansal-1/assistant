@@ -66,6 +66,59 @@ class IngestionService:
         reason: str,
         force: bool = False,
     ) -> LinkedAccount:
+        if account.source == "slack" and account.user_access_token:
+            user_expires_at = account.user_expires_at
+            if user_expires_at is not None and user_expires_at.tzinfo is None:
+                user_expires_at = user_expires_at.replace(tzinfo=timezone.utc)
+            
+            now = datetime.now(timezone.utc)
+            should_refresh_user = force or user_expires_at is None or user_expires_at <= now + timedelta(minutes=5)
+            
+            if should_refresh_user:
+                if not account.user_refresh_token:
+                    if force:
+                        raise AccountAuthError(
+                            f"Slack account '{account.label}' needs reconnect: no user refresh token is available."
+                        )
+                else:
+                    cipher = TokenCipher()
+                    try:
+                        raw_user_refresh = cipher.decrypt(account.user_refresh_token)
+                    except Exception as exc:
+                        logger.warning("Slack user refresh token decrypt failed account=%s error=%s", account.id, exc)
+                        raw_user_refresh = None
+                    
+                    if raw_user_refresh:
+                        try:
+                            logger.info(
+                                "Refreshing Slack user access token account=%s reason=%s force=%s",
+                                account.id,
+                                reason,
+                                force,
+                            )
+                            new_payload = OAuthService().refresh_token("slack", raw_user_refresh)
+                            new_user_access = new_payload.get("access_token")
+                            if new_user_access:
+                                account.user_access_token = cipher.encrypt(new_user_access)
+                                if new_payload.get("refresh_token"):
+                                    account.user_refresh_token = cipher.encrypt(new_payload["refresh_token"])
+                                user_expires_in = new_payload.get("expires_in")
+                                if user_expires_in:
+                                    account.user_expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(user_expires_in))
+                                db.flush()
+                                logger.info("Refreshed Slack user access token account=%s", account.id)
+                        except Exception as exc:
+                            logger.warning(
+                                "Slack user token refresh failed account=%s reason=%s error=%s",
+                                account.id,
+                                reason,
+                                exc,
+                            )
+                            if force:
+                                raise AccountAuthError(
+                                    f"Slack account '{account.label}' needs reconnect: user token refresh failed."
+                                ) from exc
+
         if not account.refresh_token:
             if force:
                 raise AccountAuthError(
@@ -137,15 +190,51 @@ class IngestionService:
                     f"{account.source} account '{account.label}' needs reconnect: token refresh returned no access token."
                 )
             return account
-        account.access_token = cipher.encrypt(new_access) or new_access
+        encrypted_access = cipher.encrypt(new_access) or new_access
+        encrypted_refresh = cipher.encrypt(new_payload["refresh_token"]) if new_payload.get("refresh_token") else None
+        account.access_token = encrypted_access
         if new_payload.get("refresh_token"):
-            account.refresh_token = cipher.encrypt(new_payload["refresh_token"]) or new_payload["refresh_token"]
+            account.refresh_token = encrypted_refresh or new_payload["refresh_token"]
         raw_exp = new_payload.get("expires_at")
         if raw_exp:
             account.expires_at = parse_dt(raw_exp) if isinstance(raw_exp, str) else raw_exp
+        if account.source == "jira":
+            self._propagate_rotated_jira_token(db, account, raw_refresh, encrypted_access, account.refresh_token, account.expires_at)
         db.flush()
         logger.info("Refreshed access token account=%s source=%s reason=%s", account.id, account.source, reason)
         return account
+
+    def _propagate_rotated_jira_token(
+        self,
+        db: Session,
+        account: LinkedAccount,
+        old_refresh_token: str,
+        encrypted_access_token: str,
+        encrypted_refresh_token: str | None,
+        expires_at: datetime | None,
+    ) -> None:
+        cipher = TokenCipher()
+        siblings = (
+            db.query(LinkedAccount)
+            .filter(
+                LinkedAccount.user_id == account.user_id,
+                LinkedAccount.source == "jira",
+                LinkedAccount.id != account.id,
+                LinkedAccount.is_active.is_(True),
+            )
+            .all()
+        )
+        for sibling in siblings:
+            try:
+                sibling_refresh = cipher.decrypt(sibling.refresh_token)
+            except Exception:
+                continue
+            if sibling_refresh != old_refresh_token:
+                continue
+            sibling.access_token = encrypted_access_token
+            if encrypted_refresh_token:
+                sibling.refresh_token = encrypted_refresh_token
+            sibling.expires_at = expires_at
 
     def upsert_item(self, db: Session, user_id: str, item: dict[str, Any]) -> WorkItem:
         existing = (

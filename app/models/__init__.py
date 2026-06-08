@@ -1,4 +1,5 @@
 from app.models.account import LinkedAccount, User, UserInvitation
+from app.models.feedback import FEEDBACK_ENTITY_TYPES, UserFeedback
 from app.models.communication import (
     ActionProposal,
     AuditLog,
@@ -20,6 +21,8 @@ from app.models.memory import KnownEntity, TrackedTask
 from app.models.summary import DailySummary
 
 __all__ = [
+    "FEEDBACK_ENTITY_TYPES",
+    "UserFeedback",
     "ActionProposal",
     "AuditLog",
     "Commitment",

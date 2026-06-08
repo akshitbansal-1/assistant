@@ -19,7 +19,7 @@ class SlackConnector(BaseConnector):
         if self.use_sample_data(account):
             return self.sample_items()
 
-        token = self.get_access_token(account)
+        token = self.get_user_access_token(account) or self.get_access_token(account)
         metadata = account.metadata_json or {}
         headers = {"Authorization": f"Bearer {token}"}
         channel_ids = metadata.get("channel_ids", [])
@@ -61,7 +61,7 @@ class SlackConnector(BaseConnector):
             handle = cleaned.strip("<@>").strip("@")
             return {"id": handle, "display_name": handle, "email": None, "aliases": [cleaned, handle]}
 
-        token = self.get_access_token(account)
+        token = self.get_access_token(account) or self.get_user_access_token(account)
         headers = {"Authorization": f"Bearer {token}"}
         user_id = self._extract_user_id(cleaned)
         if user_id:

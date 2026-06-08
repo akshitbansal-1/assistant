@@ -71,6 +71,9 @@ def _account_health(account: LinkedAccount) -> dict[str, object]:
         if missing and not sample_mode:
             status = "warning" if status == "ok" else status
             reasons.append(f"Missing Slack metadata: {', '.join(missing)}")
+        if not sample_mode and not account.user_access_token:
+            status = "warning" if status == "ok" else status
+            reasons.append("Missing Slack user token for history reads")
         if metadata.get("team_name"):
             details.append(str(metadata["team_name"]))
     elif account.source == "jira":

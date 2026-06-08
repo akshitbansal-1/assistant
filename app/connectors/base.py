@@ -38,6 +38,11 @@ class BaseConnector(ABC):
             return None
         return self.cipher.decrypt(account.access_token)
 
+    def get_user_access_token(self, account: LinkedAccount) -> str | None:
+        if not account.user_access_token:
+            return None
+        return self.cipher.decrypt(account.user_access_token)
+
     def get_refresh_token(self, account: LinkedAccount) -> str | None:
         if not account.refresh_token:
             return None

@@ -20,9 +20,12 @@ class AccountCreate(BaseModel):
     label: str
     account_identifier: str
     access_token: str | None = None
+    user_access_token: str | None = None
     refresh_token: str | None = None
+    user_refresh_token: str | None = None
     token_type: str | None = None
     expires_at: datetime | None = None
+    user_expires_at: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -35,6 +38,7 @@ class AccountRead(BaseModel):
     label: str
     account_identifier: str
     expires_at: datetime | None = None
+    user_expires_at: datetime | None = None
     metadata_json: dict[str, Any]
     is_active: bool
 

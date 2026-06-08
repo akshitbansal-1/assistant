@@ -163,35 +163,40 @@ def oauth_callback_browser(
     try:
         state_payload = oauth.decode_state(state)
         token_payload = oauth.exchange_code(provider, code)
-        identity = oauth.fetch_account_identity(provider, token_payload)
+        identities = oauth.fetch_account_identities(provider, token_payload)
         user_email = state_payload.get("user_email")
         if not user_email:
             raise ValueError("Missing user_email in OAuth state")
         redirect_to = state_payload.get("redirect_to") or f"/ui/users/{user_email}"
-        extra_meta = identity.get("extra_metadata", {})
-        account = accounts.upsert_linked_account(
-            db,
-            AccountCreate(
-                user_email=user_email,
-                source=provider,
-                label=identity["label"],
-                account_identifier=identity["account_identifier"],
-                access_token=token_payload.get("access_token") or token_payload.get("authed_user", {}).get("access_token"),
-                refresh_token=token_payload.get("refresh_token"),
-                token_type=token_payload.get("token_type"),
-                expires_at=token_payload.get("expires_at"),
-                metadata={
-                    "oauth_response": {
-                        key: value
-                        for key, value in token_payload.items()
-                        if key not in {"access_token", "refresh_token"}
-                    },
-                    **extra_meta,
-                },
-            ),
-        )
+        oauth_metadata = oauth.safe_oauth_metadata(token_payload)
+        created_accounts = []
+        for identity in identities:
+            extra_meta = identity.get("extra_metadata", {})
+            created_accounts.append(
+                accounts.upsert_linked_account(
+                    db,
+                    AccountCreate(
+                        user_email=user_email,
+                        source=provider,
+                        label=identity["label"],
+                        account_identifier=identity["account_identifier"],
+                        access_token=token_payload.get("access_token"),
+                        user_access_token=identity.get("user_access_token"),
+                        refresh_token=token_payload.get("refresh_token"),
+                        user_refresh_token=identity.get("user_refresh_token"),
+                        token_type=token_payload.get("token_type"),
+                        expires_at=token_payload.get("expires_at"),
+                        user_expires_at=identity.get("user_expires_at"),
+                        metadata={
+                            "oauth_response": oauth_metadata,
+                            **extra_meta,
+                        },
+                    ),
+                )
+            )
         db.commit()
-        return RedirectResponse(url=f"{redirect_to}?linked={account.source}", status_code=302)
+        linked = created_accounts[0].source if created_accounts else provider
+        return RedirectResponse(url=f"{redirect_to}?linked={linked}&linked_count={len(created_accounts)}", status_code=302)
     except Exception as exc:
         db.rollback()
         fallback = "/ui"
@@ -204,29 +209,53 @@ def oauth_callback(provider: str, payload: OAuthCallbackRequest, db: Session = D
     accounts = AccountService()
     try:
         token_payload = oauth.exchange_code(provider, payload.code)
+        identities = oauth.fetch_account_identities(provider, token_payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"OAuth exchange failed: {exc}") from exc
 
+    identity = identities[0]
+    oauth_metadata = oauth.safe_oauth_metadata(token_payload)
     account = accounts.upsert_linked_account(
         db,
         AccountCreate(
             user_email=payload.user_email,
             source=provider,
-            label=payload.label or f"{provider} account",
-            account_identifier=payload.account_identifier or token_payload.get("team", {}).get("id") or token_payload.get("bot_user_id") or provider,
+            label=payload.label or identity["label"],
+            account_identifier=payload.account_identifier or identity["account_identifier"],
             access_token=token_payload.get("access_token"),
+            user_access_token=identity.get("user_access_token"),
             refresh_token=token_payload.get("refresh_token"),
+            user_refresh_token=identity.get("user_refresh_token"),
             token_type=token_payload.get("token_type"),
             expires_at=token_payload.get("expires_at"),
+            user_expires_at=identity.get("user_expires_at"),
             metadata={
-                "oauth_response": {
-                    key: value
-                    for key, value in token_payload.items()
-                    if key not in {"access_token", "refresh_token"}
-                }
+                "oauth_response": oauth_metadata,
+                **identity.get("extra_metadata", {}),
             },
         ),
     )
+    for extra_identity in identities[1:]:
+        accounts.upsert_linked_account(
+            db,
+            AccountCreate(
+                user_email=payload.user_email,
+                source=provider,
+                label=extra_identity["label"],
+                account_identifier=extra_identity["account_identifier"],
+                access_token=token_payload.get("access_token"),
+                user_access_token=extra_identity.get("user_access_token"),
+                refresh_token=token_payload.get("refresh_token"),
+                user_refresh_token=extra_identity.get("user_refresh_token"),
+                token_type=token_payload.get("token_type"),
+                expires_at=token_payload.get("expires_at"),
+                user_expires_at=extra_identity.get("user_expires_at"),
+                metadata={
+                    "oauth_response": oauth_metadata,
+                    **extra_identity.get("extra_metadata", {}),
+                },
+            ),
+        )
     db.commit()
     db.refresh(account)
     return account
@@ -329,6 +358,8 @@ def retrieve_context(payload: RetrievalRequest, db: Session = Depends(get_db)) -
             for item in result["items"]
         ],
         "citations": result["citations"],
+        "retrieval_trace": result.get("retrieval_trace", []),
+        "search_trace": result.get("search_trace", []),
     }
     logger.info(
         "API retrieval completed user=%s tasks=%d commitments=%d items=%d",

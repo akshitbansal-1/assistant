@@ -22,6 +22,7 @@ async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
     insp = inspect(engine)
     _add_column_if_missing(insp, "linked_accounts", "last_fetched_at", "TIMESTAMP NULL")
+    _add_column_if_missing(insp, "linked_accounts", "user_access_token", "TEXT NULL")
     _add_column_if_missing(insp, "people", "manager_person_id", "VARCHAR NULL")
     _add_column_if_missing(insp, "action_proposals", "rejected_by_person_id", "VARCHAR NULL")
     _add_column_if_missing(insp, "action_proposals", "rejected_at", "TIMESTAMP NULL")

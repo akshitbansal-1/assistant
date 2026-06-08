@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     jira_client_secret: str | None = None
     jira_redirect_uri: str | None = None
     jira_stale_days: int = Field(default=3, ge=1, le=90)
+    stale_agent_interval_minutes: int = Field(default=180, ge=15, le=1440)
+    retrieval_intent_max_chars: int = Field(default=2000, ge=200, le=8000)
+    retrieval_context_max_chars: int = Field(default=12000, ge=2000, le=50000)
 
     request_timeout_seconds: int = Field(default=20, ge=1, le=120)
     llm_timeout_seconds: int = Field(default=30, ge=1, le=120)

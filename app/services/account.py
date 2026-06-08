@@ -40,13 +40,18 @@ class AccountService:
             .first()
         )
         encrypted_access = self.cipher.encrypt(payload.access_token)
+        encrypted_user_access = self.cipher.encrypt(payload.user_access_token)
         encrypted_refresh = self.cipher.encrypt(payload.refresh_token)
+        encrypted_user_refresh = self.cipher.encrypt(payload.user_refresh_token)
         if account:
             account.label = payload.label
             account.access_token = encrypted_access or account.access_token
+            account.user_access_token = encrypted_user_access or account.user_access_token
             account.refresh_token = encrypted_refresh or account.refresh_token
+            account.user_refresh_token = encrypted_user_refresh or account.user_refresh_token
             account.token_type = payload.token_type or account.token_type
             account.expires_at = payload.expires_at or account.expires_at
+            account.user_expires_at = payload.user_expires_at or account.user_expires_at
             account.metadata_json = {**(account.metadata_json or {}), **metadata}
             account.is_active = True
         else:
@@ -56,9 +61,12 @@ class AccountService:
                 label=payload.label,
                 account_identifier=payload.account_identifier,
                 access_token=encrypted_access,
+                user_access_token=encrypted_user_access,
                 refresh_token=encrypted_refresh,
+                user_refresh_token=encrypted_user_refresh,
                 token_type=payload.token_type,
                 expires_at=payload.expires_at,
+                user_expires_at=payload.user_expires_at,
                 metadata_json=metadata,
                 is_active=True,
             )

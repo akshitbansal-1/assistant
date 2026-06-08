@@ -45,7 +45,7 @@ SLACK_REDIRECT_URI=http://localhost:3000/api/v1/oauth/slack/callback
 **Steps**
 
 1. Go to [Slack API → Your Apps](https://api.slack.com/apps) → **Create New App → From scratch**.
-2. Name the app and pick your development workspace.
+2. Name the app and pick your development workspace. This does **not** limit the app forever; Slack starts every new app in a development-workspace-only state.
 3. **OAuth & Permissions → Redirect URLs** → add `http://localhost:3000/api/v1/oauth/slack/callback` → **Save URLs**.
 4. **OAuth & Permissions → Bot Token Scopes** → add:
    - `chat:write`
@@ -63,9 +63,12 @@ SLACK_REDIRECT_URI=http://localhost:3000/api/v1/oauth/slack/callback
    - `mpim:history`
    - `users:read`
    - `users:read.email`
-6. **Basic Information** → copy **Client ID** and **Client Secret** into `.env`.
+6. **Settings → Manage Distribution** → complete Slack's distribution checklist and activate distribution before trying to install the app into other workspaces. For non-local installs, use a public HTTPS redirect URL and set `SLACK_REDIRECT_URI` to that exact URL.
+7. **Basic Information** → copy **Client ID** and **Client Secret** into `.env`.
 
 **Scopes used:** bot scopes `chat:write`, `commands`, `im:read`, `im:write`, `users:read`, `users:read.email`; user scopes `channels:history`, `groups:history`, `im:history`, `mpim:history`, `channels:read`, `groups:read`, `users:read`, `users:read.email`.
+
+**Multi-workspace behavior:** each successful Slack OAuth install creates or updates a linked account for that Slack workspace and installing Slack user. The app stores the bot token for approved writes and the user token for history reads.
 
 ---
 
@@ -108,6 +111,8 @@ JIRA_REDIRECT_URI=http://localhost:3000/api/v1/oauth/jira/callback
 5. **Settings** tab → copy **Client ID** and **Secret** into `.env`.
 
 **Scopes used:** `read:jira-work`, `read:jira-user`, `write:jira-work`, `offline_access`
+
+**Multi-site behavior:** Atlassian can return multiple Jira sites from one OAuth grant. The callback stores each accessible site as its own linked account while sharing the OAuth token pair. `offline_access` is required so refresh tokens can keep the connection usable after the short-lived access token expires.
 
 ---
 

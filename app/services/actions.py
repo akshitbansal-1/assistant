@@ -246,15 +246,17 @@ class ActionProposalService:
             raise ValueError("Slack DM proposal requires target_slack_user_id and text")
         logger.info("Sending Slack DM proposal=%s target_slack_user=%s", proposal.id, target_user_id)
 
-        account = (
+        query = (
             db.query(LinkedAccount)
             .filter(
                 LinkedAccount.user_id == proposal.user_id,
                 LinkedAccount.source == "slack",
                 LinkedAccount.is_active.is_(True),
             )
-            .first()
         )
+        if payload.get("slack_account_id"):
+            query = query.filter(LinkedAccount.id == payload["slack_account_id"])
+        account = query.first()
         if not account or not account.access_token:
             raise ValueError("No active Slack account is available for sending DMs")
         token = TokenCipher().decrypt(account.access_token) or account.access_token
@@ -301,15 +303,17 @@ class ActionProposalService:
             raise ValueError("Jira update proposal requires jira_key and body")
         logger.info("Posting Jira update proposal=%s jira_key=%s operation=%s", proposal.id, jira_key, operation)
 
-        account = (
+        query = (
             db.query(LinkedAccount)
             .filter(
                 LinkedAccount.user_id == proposal.user_id,
                 LinkedAccount.source == "jira",
                 LinkedAccount.is_active.is_(True),
             )
-            .first()
         )
+        if payload.get("jira_account_id"):
+            query = query.filter(LinkedAccount.id == payload["jira_account_id"])
+        account = query.first()
         if not account or not account.access_token:
             raise ValueError("No active Jira account is available for posting updates")
         base_url = (account.metadata_json or {}).get("base_url")

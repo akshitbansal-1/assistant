@@ -220,7 +220,7 @@ class CommunicationLoopService:
                     external_id=item.external_id,
                     source_url=citation.get("url"),
                     slack_thread_id=item.thread_id if item.source == "slack" else None,
-                    metadata_json=metadata,
+                    metadata_json={**metadata, "account_id": item.account_id},
                 )
             )
             logger.info("Linked task source task=%s source=%s external_id=%s", task.id, item.source, item.external_id)
@@ -421,7 +421,12 @@ class CommunicationLoopService:
         )
         blocker = (latest_snapshot.blocker if latest_snapshot else None) or (task.blocker if task else None)
         eta = (latest_snapshot.eta if latest_snapshot else None) or (task.eta if task else None)
-        confidence = max([task.confidence if task else 0.0, latest_snapshot.confidence if latest_snapshot else 0.0, 0.45])
+        confidence = self.retrieval.calibrate_confidence(
+            task=task,
+            latest_snapshot=latest_snapshot,
+            citations=citations,
+            items=items,
+        )
         open_commitments = [c.commitment_text for c in commitments if c.status in {"open", "blocked", "stale"}][:2]
         answer_parts = [f"Status: {status}"]
         if blocker:
@@ -448,6 +453,7 @@ class CommunicationLoopService:
             "confidence": confidence,
             "task_id": task.id if task else None,
             "citations": citations,
+            "retrieval_trace": result.get("retrieval_trace", []),
         }
 
     def create_follow_up(
@@ -503,6 +509,7 @@ class CommunicationLoopService:
             reason="Manager requested a contextual follow-up. External DM waits for approval.",
             payload={
                 "target_slack_user_id": (target.source_ids_json or {}).get("slack") or person.strip("<@>"),
+                "slack_account_id": (target.metadata_json or {}).get("slack_account_id"),
                 "text": text,
                 "follow_up_id": follow_up.id,
             },
@@ -529,14 +536,20 @@ class CommunicationLoopService:
         return {"follow_up": follow_up, "proposal": proposal, "whereis": whereis}
 
     def resolve_slack_person(self, db: Session, user: User, organization_id: str, person_ref: str) -> Person | None:
-        account = self._active_account(db, user.id, "slack")
-        if not account:
+        accounts = self._active_accounts(db, user.id, "slack")
+        if not accounts:
             return None
-        try:
-            profile = SlackConnector().resolve_user(account, person_ref)
-        except Exception as exc:
-            logger.warning("Slack user lookup failed user=%s person_ref=%s error=%s", user.email, person_ref, exc)
-            return None
+        profile = None
+        matched_account = None
+        for account in accounts:
+            try:
+                profile = SlackConnector().resolve_user(account, person_ref)
+            except Exception as exc:
+                logger.warning("Slack user lookup failed user=%s account=%s person_ref=%s error=%s", user.email, account.id, person_ref, exc)
+                continue
+            if profile:
+                matched_account = account
+                break
         if not profile:
             return None
         person = self.get_or_create_person(
@@ -555,28 +568,31 @@ class CommunicationLoopService:
         metadata = dict(person.metadata_json or {})
         if profile.get("team_id"):
             metadata["slack_team_id"] = profile["team_id"]
+        if matched_account:
+            metadata["slack_account_id"] = matched_account.id
         person.metadata_json = metadata
         db.flush()
         return person
 
     def refresh_jira_issue_context(self, db: Session, user: User, organization_id: str, jira_key: str) -> WorkItem | None:
-        account = self._active_account(db, user.id, "jira")
-        if not account:
+        accounts = self._active_accounts(db, user.id, "jira")
+        if not accounts:
             return None
-        try:
-            raw_item = JiraConnector().fetch_issue_by_key(account, jira_key)
-            if not raw_item:
-                return None
-            normalized = NormalizationService().normalize_item(account, raw_item)
-            record = IngestionService().upsert_item(db, user.id, normalized)
-            IntelligenceService().classify_all(db, [record])
-            self.upsert_task_from_item(db, organization_id, user.id, record)
-            db.flush()
-            logger.info("Refreshed Jira issue context user=%s jira_key=%s work_item=%s", user.email, jira_key, record.id)
-            return record
-        except Exception as exc:
-            logger.warning("Jira issue refresh skipped user=%s jira_key=%s error=%s", user.email, jira_key, exc)
-            return None
+        for account in accounts:
+            try:
+                raw_item = JiraConnector().fetch_issue_by_key(account, jira_key)
+                if not raw_item:
+                    continue
+                normalized = NormalizationService().normalize_item(account, raw_item)
+                record = IngestionService().upsert_item(db, user.id, normalized)
+                IntelligenceService().classify_all(db, [record])
+                self.upsert_task_from_item(db, organization_id, user.id, record)
+                db.flush()
+                logger.info("Refreshed Jira issue context user=%s account=%s jira_key=%s work_item=%s", user.email, account.id, jira_key, record.id)
+                return record
+            except Exception as exc:
+                logger.warning("Jira issue refresh skipped user=%s account=%s jira_key=%s error=%s", user.email, account.id, jira_key, exc)
+        return None
 
     def capture_follow_up_reply(
         self,
@@ -680,6 +696,7 @@ class CommunicationLoopService:
                 "jira_key": task.jira_key,
                 "body": latest_reply.body,
                 "operation": "add_comment",
+                "jira_account_id": self._jira_account_id_for_task(db, task.id),
             },
             citations=task.source_citations_json or [],
             requested_by_person_id=follow_up.requester_person_id,
@@ -785,6 +802,10 @@ class CommunicationLoopService:
         return left_utc < right_utc
 
     def _active_account(self, db: Session, user_id: str, source: str) -> LinkedAccount | None:
+        accounts = self._active_accounts(db, user_id, source)
+        return accounts[0] if accounts else None
+
+    def _active_accounts(self, db: Session, user_id: str, source: str) -> list[LinkedAccount]:
         return (
             db.query(LinkedAccount)
             .filter(
@@ -792,5 +813,15 @@ class CommunicationLoopService:
                 LinkedAccount.source == source,
                 LinkedAccount.is_active.is_(True),
             )
+            .order_by(LinkedAccount.created_at.desc())
+            .all()
+        )
+
+    def _jira_account_id_for_task(self, db: Session, task_id: str) -> str | None:
+        source = (
+            db.query(TaskSource)
+            .filter(TaskSource.task_id == task_id, TaskSource.source_system == "jira")
+            .order_by(TaskSource.created_at.desc())
             .first()
         )
+        return (source.metadata_json or {}).get("account_id") if source else None
